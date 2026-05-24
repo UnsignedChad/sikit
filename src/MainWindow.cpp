@@ -351,7 +351,9 @@ void MainWindow::onExportNetTouchstone() {
     spec.layer_ordinal = 0;
     spec.length_m = total_length;
     spec.stackup = sikit::analysis::AnalysisStackup::from_board(*board_);
-    spec.engine = sikit::analysis::Engine::ClosedForm;
+    spec.engine = (use_fdm_action_ && use_fdm_action_->isChecked())
+                      ? sikit::analysis::Engine::Fdm
+                      : sikit::analysis::Engine::ClosedForm;
 
     // Standard 200-point linear sweep from 10 MHz to 20 GHz — wide enough
     // to cover any protocol up to USB4 / PCIe Gen6 fundamentals.
@@ -594,7 +596,9 @@ void MainWindow::onExportNetCsv() {
     spec.layer_ordinal = 0;
     spec.length_m = total_length;
     spec.stackup = sikit::analysis::AnalysisStackup::from_board(*board_);
-    spec.engine = sikit::analysis::Engine::ClosedForm;
+    spec.engine = (use_fdm_action_ && use_fdm_action_->isChecked())
+                      ? sikit::analysis::Engine::Fdm
+                      : sikit::analysis::Engine::ClosedForm;
 
     std::vector<double> freqs;
     freqs.reserve(200);
@@ -697,7 +701,9 @@ void MainWindow::onSynthesizeEye() {
     spec.layer_ordinal = 0;            // F.Cu microstrip by default
     spec.length_m = length_mm * 1e-3;
     spec.stackup = stackup;
-    spec.engine = sikit::analysis::Engine::ClosedForm;
+    spec.engine = (use_fdm_action_ && use_fdm_action_->isChecked())
+                      ? sikit::analysis::Engine::Fdm
+                      : sikit::analysis::Engine::ClosedForm;
 
     // Frequency grid wide enough to cover the TX signal's spectrum.
     // PRBS-7 NRZ at B Gbps has significant content up to ~5B.
@@ -1018,7 +1024,9 @@ void MainWindow::onPlotNetSParam() {
     spec.layer_ordinal = 0;
     spec.length_m = total_length;
     spec.stackup = sikit::analysis::AnalysisStackup::from_board(*board_);
-    spec.engine = sikit::analysis::Engine::ClosedForm;
+    spec.engine = (use_fdm_action_ && use_fdm_action_->isChecked())
+                      ? sikit::analysis::Engine::Fdm
+                      : sikit::analysis::Engine::ClosedForm;
 
     std::vector<double> freqs;
     freqs.reserve(200);

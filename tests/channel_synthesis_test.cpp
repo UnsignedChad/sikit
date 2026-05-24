@@ -135,3 +135,37 @@ TEST_CASE("synthesize: zero loss reproduces lossless behavior", "[synth]") {
     auto t = synthesize_channel(spec, {5e9}, imp.z0);
     REQUIRE(std::abs(t.s_matrices[0][1]) == Approx(1.0).margin(1e-6));
 }
+
+TEST_CASE("synthesize: FDM engine produces a similar Z0/loss to closed-form",
+          "[synth][fdm]") {
+    // The FDM and Wadell paths should agree on Z0 to within a few percent for
+    // a canonical microstrip; the synthesised 2-port should then agree on
+    // |S21| at low frequency (loss is dominated by lc/length, not engine).
+    auto spec_cf = basic_spec();
+    spec_cf.length_m = 0.10;
+    spec_cf.stackup.tan_delta = 0.02;
+    spec_cf.engine = Engine::ClosedForm;
+
+    auto spec_fdm = spec_cf;
+    spec_fdm.engine = Engine::Fdm;
+
+    auto ts_cf  = synthesize_channel(spec_cf,  {1e9, 5e9}, 50.0);
+    auto ts_fdm = synthesize_channel(spec_fdm, {1e9, 5e9}, 50.0);
+
+    const double s21_cf_1g  = std::abs(ts_cf.s_matrices[0][1]);
+    const double s21_fdm_1g = std::abs(ts_fdm.s_matrices[0][1]);
+    // Within 5%: both engines compute the same v_phase via eps_eff and
+    // similar Z0; the FDM path picks up small additional accuracy but
+    // shouldn't swing |S21| by more than that.
+    REQUIRE(std::abs(s21_cf_1g - s21_fdm_1g) < 0.05);
+}
+
+TEST_CASE("synthesize: FDM engine returns 2-port with the requested grid",
+          "[synth][fdm]") {
+    auto spec = basic_spec();
+    spec.engine = Engine::Fdm;
+    auto ts = synthesize_channel(spec, {1e9, 3e9, 7e9}, 50.0);
+    REQUIRE(ts.num_ports == 2);
+    REQUIRE(ts.frequencies.size() == 3);
+    REQUIRE(ts.s_matrices.size() == 3);
+}
