@@ -11,6 +11,8 @@
 
 #include "model/Board.h"
 
+#include "analysis/SurfaceRoughness.h"
+
 namespace sikit::analysis {
 
 enum class Engine {
@@ -27,6 +29,10 @@ struct AnalysisStackup {
     // Loss parameters (default FR-4 / 1oz copper).
     double tan_delta     = 0.02;        // dielectric loss tangent
     double sigma_copper  = 5.8e7;       // S/m (annealed copper)
+
+    // Copper surface roughness model. Defaults to None (smooth) so v0
+    // behavior is preserved; callers opt in for high-frequency accuracy.
+    RoughnessSpec roughness;
 
     bool   from_real_stackup = false;
 

@@ -25,9 +25,12 @@ double microstrip_eps_eff(double w, double h, double eps_r) {
 }
 
 double per_freq_alpha(double f, double trace_width, double Z0, double eps_eff,
-                      double tan_delta, double sigma_copper) {
+                      double tan_delta, double sigma_copper,
+                      const RoughnessSpec& roughness) {
     if (trace_width <= 0.0 || Z0 <= 0.0) return 0.0;
-    const double Rs = std::sqrt(std::numbers::pi * f * kMu0 / sigma_copper);
+    const double Rs_smooth = std::sqrt(std::numbers::pi * f * kMu0 / sigma_copper);
+    const double K = roughness_factor(roughness, f, sigma_copper);
+    const double Rs = Rs_smooth * K;
     const double R_per_m = Rs / trace_width;
     const double alpha_c = R_per_m / (2.0 * Z0);
     const double alpha_d = std::numbers::pi * f * std::sqrt(eps_eff) /
@@ -87,7 +90,8 @@ sikit::touchstone::TouchstoneFile synthesize_channel(
 
         const double alpha = per_freq_alpha(f, spec.trace_width, Z0_dc,
                                              eps_eff, tan_d,
-                                             spec.stackup.sigma_copper);
+                                             spec.stackup.sigma_copper,
+                                             spec.stackup.roughness);
         const double beta = two_pi * f / v_phase;
         const Complex gamma(alpha, beta);
         const Complex gl = gamma * l;

@@ -175,7 +175,14 @@ TEST_CASE("ref-data: trace impedance monotonicity sanity", "[ref]") {
     //   - wider trace → lower Z₀
     //   - thicker dielectric → higher Z₀
     //   - higher εr → lower Z₀
-    AnalysisStackup s{mm(0.2), mm(0.4), mm(0.035), 4.4, 0.02, 5.8e7, false};
+    AnalysisStackup s;
+    s.outer_dielectric_height = mm(0.2);
+    s.inner_plane_separation  = mm(0.4);
+    s.copper_thickness        = mm(0.035);
+    s.epsilon_r               = 4.4;
+    s.tan_delta               = 0.02;
+    s.sigma_copper            = 5.8e7;
+    s.from_real_stackup       = false;
 
     auto narrow = compute_one(mm(0.10), 0, s);
     auto wide   = compute_one(mm(0.50), 0, s);

@@ -46,6 +46,7 @@ add_executable(sikit_tests
     ami_test.cpp
     project_test.cpp
     via_model_test.cpp
+    roughness_test.cpp
 )
 
 target_link_libraries(sikit_tests PRIVATE

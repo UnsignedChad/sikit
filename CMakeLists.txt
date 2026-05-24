@@ -46,6 +46,7 @@ add_library(sikit_core STATIC
     src/analysis/ChannelSynthesis.cpp
     src/analysis/DiffSynth.cpp
     src/analysis/ViaModel.cpp
+    src/analysis/SurfaceRoughness.cpp
     src/ibis/Ibis.cpp
     src/ibis/Ami.cpp
     src/dispersion/DjordjevicSarkar.cpp
