@@ -128,6 +128,7 @@ AnalysisStackup AnalysisStackup::from_board(const model::Board& b) {
 
 SegmentImpedance compute_one(double trace_width, int layer_ordinal,
                               const AnalysisStackup& s) {
+    constexpr double kC0 = 2.99792458e8;
     SegmentImpedance r;
     r.layer_ordinal = layer_ordinal;
     r.trace_width = trace_width;
@@ -144,6 +145,12 @@ SegmentImpedance compute_one(double trace_width, int layer_ordinal,
         };
         r.z0 = impedance::microstrip_z0(mp);
         r.in_valid_range = impedance::microstrip_in_valid_range(mp);
+        // Hammerstad effective permittivity for microstrip.
+        const double wh = trace_width / s.outer_dielectric_height;
+        const double er = s.epsilon_r;
+        r.eps_eff = 0.5 * (er + 1.0) +
+                    0.5 * (er - 1.0) / std::sqrt(1.0 + 12.0 / wh);
+        r.v_phase = kC0 / std::sqrt(r.eps_eff);
     } else {
         impedance::StriplineParams sp{
             .trace_width = trace_width,
@@ -153,6 +160,9 @@ SegmentImpedance compute_one(double trace_width, int layer_ordinal,
         };
         r.z0 = impedance::stripline_z0(sp);
         r.in_valid_range = impedance::stripline_in_valid_range(sp);
+        // Stripline trace is fully embedded → eps_eff = eps_r.
+        r.eps_eff = s.epsilon_r;
+        r.v_phase = kC0 / std::sqrt(r.eps_eff);
     }
     return r;
 }
@@ -263,6 +273,8 @@ SegmentImpedance compute_one_fdm(double trace_width, int layer_ordinal,
         return r;
     }
     r.z0 = out.z0_ohm;
+    r.eps_eff = out.eps_eff;
+    r.v_phase = out.v_phase;
     return r;
 }
 

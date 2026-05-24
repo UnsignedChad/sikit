@@ -39,6 +39,7 @@ add_library(sikit_core STATIC
     src/impedance/Impedance.cpp
     src/highspeed/DiffPair.cpp
     src/analysis/TraceImpedance.cpp
+    src/analysis/ChannelSynthesis.cpp
     src/sparam/SParam.cpp
     src/eye/Eye.cpp
     src/specs/EyeMask.cpp
