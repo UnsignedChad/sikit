@@ -18,11 +18,12 @@ public:
 
 private slots:
     void onOpenKicadPcb();
+    void onOpenTouchstoneEye();
 
 private:
     void populateLayerPanel();
     void showImpedanceOverlay(double target_z0);
-    void showEyeDiagram(bool severe_isi);
+    void showEyeDiagramDemo(bool severe_isi);
 
     PcbCanvas* canvas_;
     LayerPanel* layer_panel_;

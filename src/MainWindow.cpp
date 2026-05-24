@@ -5,6 +5,7 @@
 #include <QDockWidget>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QInputDialog>
 #include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -15,9 +16,11 @@
 #include "LayerPanel.h"
 #include "PcbCanvas.h"
 #include "analysis/TraceImpedance.h"
+#include "dsp/ChannelResponse.h"
 #include "eye/Eye.h"
 #include "parser/KicadPcbParser.h"
 #include "specs/EyeMask.h"
+#include "touchstone/Touchstone.h"
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle("sikit");
@@ -38,6 +41,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     auto* openAct = fileMenu->addAction("&Open KiCad PCB...");
     openAct->setShortcut(QKeySequence::Open);
     connect(openAct, &QAction::triggered, this, &MainWindow::onOpenKicadPcb);
+    auto* openTs = fileMenu->addAction("Open &Touchstone for eye...");
+    openTs->setShortcut(QKeySequence("Ctrl+T"));
+    connect(openTs, &QAction::triggered, this, &MainWindow::onOpenTouchstoneEye);
     fileMenu->addSeparator();
     fileMenu->addAction("E&xit", this, &QWidget::close);
 
@@ -65,14 +71,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     clearAct->setShortcut(QKeySequence("Ctrl+0"));
     connect(clearAct, &QAction::triggered, canvas_, &PcbCanvas::clearImpedanceOverlay);
     analyzeMenu->addSeparator();
-    auto* eyeOpen = analyzeMenu->addAction("Eye diagram — clean channel (demo)");
+    auto* eyeOpen = analyzeMenu->addAction("Eye diagram — clean RC channel (demo)");
     eyeOpen->setShortcut(QKeySequence("Ctrl+E"));
     connect(eyeOpen, &QAction::triggered, this,
-            [this]() { showEyeDiagram(/*severe_isi=*/false); });
-    auto* eyeISI = analyzeMenu->addAction("Eye diagram — heavy ISI (demo)");
+            [this]() { showEyeDiagramDemo(/*severe_isi=*/false); });
+    auto* eyeISI = analyzeMenu->addAction("Eye diagram — heavy ISI RC channel (demo)");
     eyeISI->setShortcut(QKeySequence("Ctrl+Shift+E"));
     connect(eyeISI, &QAction::triggered, this,
-            [this]() { showEyeDiagram(/*severe_isi=*/true); });
+            [this]() { showEyeDiagramDemo(/*severe_isi=*/true); });
 
     hover_label_ = new QLabel(this);
     hover_label_->setMinimumWidth(300);
@@ -88,6 +94,76 @@ void MainWindow::onOpenKicadPcb() {
         "KiCad PCB (*.kicad_pcb);;All files (*)");
     if (path.isEmpty()) return;
     loadKicadPcb(path);
+}
+
+void MainWindow::onOpenTouchstoneEye() {
+    const QString path = QFileDialog::getOpenFileName(
+        this, "Open Touchstone (.s2p) for eye analysis", QString(),
+        "Touchstone 2-port (*.s2p);;All files (*)");
+    if (path.isEmpty()) return;
+
+    bool ok = false;
+    const double baud_gbps = QInputDialog::getDouble(
+        this, "Baud rate", "Bit rate (Gbps):", 1.0, 0.01, 100.0, 2, &ok);
+    if (!ok) return;
+
+    sikit::touchstone::TouchstoneFile channel;
+    try {
+        channel = sikit::touchstone::TouchstoneReader::read_file(path.toStdString());
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Open Touchstone failed", e.what());
+        return;
+    }
+    if (channel.num_ports != 2) {
+        QMessageBox::warning(this, "Open Touchstone",
+                             QString("Expected 2-port file; got %1 ports.")
+                                 .arg(channel.num_ports));
+        return;
+    }
+
+    // TX waveform sized to give us enough cycles for a stable eye and a
+    // sample rate well above the Touchstone's Nyquist so the interpolation
+    // is bounded.
+    constexpr int kBitCount = 2000;
+    constexpr int kSpu = 32;
+    const double baud = baud_gbps * 1e9;
+    const double fs = baud * kSpu;
+
+    auto bits = sikit::eye::prbs7(kBitCount);
+    auto tx = sikit::eye::nrz_waveform(bits, kSpu);
+
+    std::vector<double> rx;
+    try {
+        rx = sikit::dsp::apply_channel(tx, fs, channel);
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Apply channel failed", e.what());
+        return;
+    }
+
+    auto eye = sikit::eye::build_eye(rx, kSpu, 128, 96, /*warmup=*/8);
+    const auto& mask = sikit::specs::usb20_hs_template1();
+    const int violations = sikit::specs::count_violations(eye, mask);
+
+    auto* w = new EyeWindow(this);
+    w->setAttribute(Qt::WA_DeleteOnClose);
+    w->setTitleSubtext(
+        QString("%1 · %2 Gbps PRBS-7")
+            .arg(QFileInfo(path).fileName())
+            .arg(baud_gbps, 0, 'f', 2));
+    w->setEye(eye);
+    w->setMask(&mask);
+    w->show();
+
+    statusBar()->showMessage(
+        QString("Eye from %1 @ %2 Gbps: mask=%3 · violations=%4 %5")
+            .arg(QFileInfo(path).fileName())
+            .arg(baud_gbps, 0, 'f', 2)
+            .arg(QString::fromStdString(mask.name))
+            .arg(violations)
+            .arg(violations == 0 ? "PASS" : "FAIL"));
+    spdlog::info("touchstone eye: {} @ {} Gbps, {} freq points, {} violations",
+                 path.toStdString(), baud_gbps,
+                 channel.frequencies.size(), violations);
 }
 
 void MainWindow::showImpedanceOverlay(double target_z0) {
@@ -115,7 +191,7 @@ void MainWindow::showImpedanceOverlay(double target_z0) {
                  target_z0, on_spec, warn, fail);
 }
 
-void MainWindow::showEyeDiagram(bool severe_isi) {
+void MainWindow::showEyeDiagramDemo(bool severe_isi) {
     constexpr int kBitCount = 2000;
     constexpr int kSpu = 32;
     constexpr double kBaud = 1.0e9;
