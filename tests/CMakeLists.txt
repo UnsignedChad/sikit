@@ -44,6 +44,7 @@ add_executable(sikit_tests
     rlgc_test.cpp
     fdm_refined_test.cpp
     ami_test.cpp
+    project_test.cpp
 )
 
 target_link_libraries(sikit_tests PRIVATE

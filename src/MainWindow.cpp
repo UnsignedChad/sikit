@@ -69,6 +69,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     auto* openAmi = fileMenu->addAction("Open A&MI model...");
     openAmi->setShortcut(QKeySequence("Ctrl+M"));
     connect(openAmi, &QAction::triggered, this, &MainWindow::onOpenAmi);
+    fileMenu->addSeparator();
+    auto* openProj = fileMenu->addAction("Open pr&oject...");
+    openProj->setShortcut(QKeySequence("Ctrl+Shift+O"));
+    connect(openProj, &QAction::triggered, this, &MainWindow::onOpenProject);
+    auto* saveProj = fileMenu->addAction("&Save project as...");
+    saveProj->setShortcut(QKeySequence::Save);
+    connect(saveProj, &QAction::triggered, this, &MainWindow::onSaveProject);
     auto* openSPlot = fileMenu->addAction("&Plot S-parameters from file...");
     openSPlot->setShortcut(QKeySequence("Ctrl+P"));
     connect(openSPlot, &QAction::triggered, this, &MainWindow::onOpenSParamPlot);
@@ -529,6 +536,7 @@ void MainWindow::onOpenIbis() {
 
     ibis_file_ = std::move(f);
     active_ibis_model_ = choice.toStdString();
+    ibis_source_path_ = path;
 
     statusBar()->showMessage(
         QString("IBIS loaded: %1 — model %2 active. Eye diagrams will use this buffer.")
@@ -922,6 +930,7 @@ bool MainWindow::loadKicadPcb(const QString& path) {
         board_ = std::move(board);
         canvas_->setBoard(board_.get());
         populateLayerPanel();
+        current_pcb_path_ = path;
 
         spdlog::info("loaded {}: {} layers ({} copper), {} nets, {} segments, "
                      "{} vias, {} pads, {} zones",
@@ -1192,6 +1201,8 @@ void MainWindow::onOpenAmi() {
 
     ami_file_  = std::move(f);
     ami_model_ = std::move(mdl);
+    ami_params_path_  = ami_path;
+    ami_library_path_ = lib_path;
     statusBar()->showMessage(
         QString("AMI loaded: %1 + %2 — eye pipeline will apply this model as RX.")
             .arg(QFileInfo(ami_path).fileName())
@@ -1254,4 +1265,98 @@ void MainWindow::applyAmiIfLoaded(
     } catch (const std::exception& e) {
         spdlog::warn("AMI_GetWave threw: {}", e.what());
     }
+}
+
+
+// ---------- Project file (Tier 1.6) -------------------------------------
+
+void MainWindow::onSaveProject() {
+    const QString suggested = current_project_path_.isEmpty()
+        ? (current_pcb_path_.isEmpty()
+               ? QString("untitled.sikitproj")
+               : QFileInfo(current_pcb_path_).baseName() + ".sikitproj")
+        : current_project_path_;
+    const QString path = QFileDialog::getSaveFileName(
+        this, "Save sikit project", suggested,
+        "sikit project (*.sikitproj);;All files (*)");
+    if (path.isEmpty()) return;
+
+    sikit::project::Project p;
+    p.kicad_pcb = current_pcb_path_.toStdString();
+    if (ibis_file_) {
+        p.ibis = sikit::project::IbisRef{
+            ibis_source_path_.toStdString(),
+            active_ibis_model_};
+    }
+    if (ami_file_) {
+        p.ami = sikit::project::AmiRef{
+            ami_params_path_.toStdString(),
+            ami_library_path_.toStdString()};
+    }
+    p.use_fdm = use_fdm_action_ && use_fdm_action_->isChecked();
+
+    try {
+        sikit::project::save_project(p, path.toStdString());
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Save project failed", e.what());
+        return;
+    }
+    current_project_path_ = path;
+    statusBar()->showMessage(QString("Project saved → %1")
+                                 .arg(QFileInfo(path).fileName()));
+    spdlog::info("project: saved to {}", path.toStdString());
+}
+
+void MainWindow::onOpenProject() {
+    const QString path = QFileDialog::getOpenFileName(
+        this, "Open sikit project", QString(),
+        "sikit project (*.sikitproj);;All files (*)");
+    if (path.isEmpty()) return;
+
+    sikit::project::Project p;
+    try {
+        p = sikit::project::load_project(path.toStdString());
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Open project failed", e.what());
+        return;
+    }
+    current_project_path_ = path;
+
+    // 1) PCB
+    if (!p.kicad_pcb.empty()) {
+        loadKicadPcb(QString::fromStdString(p.kicad_pcb));
+    }
+
+    // 2) IBIS
+    if (p.ibis) {
+        try {
+            ibis_file_ = sikit::ibis::IbisReader::read_file(p.ibis->file);
+            active_ibis_model_ = p.ibis->model;
+            ibis_source_path_  = QString::fromStdString(p.ibis->file);
+        } catch (const std::exception& e) {
+            spdlog::warn("project: IBIS load failed: {}", e.what());
+        }
+    }
+
+    // 3) AMI
+    if (p.ami) {
+        try {
+            ami_file_ = sikit::ibis::ami::AmiParser::read_file(p.ami->params);
+            ami_params_path_ = QString::fromStdString(p.ami->params);
+            if (!p.ami->library.empty()) {
+                ami_model_ = std::make_unique<sikit::ibis::ami::AmiModel>(
+                    std::filesystem::path(p.ami->library));
+                ami_library_path_ = QString::fromStdString(p.ami->library);
+            }
+        } catch (const std::exception& e) {
+            spdlog::warn("project: AMI load failed: {}", e.what());
+        }
+    }
+
+    // 4) FDM toggle
+    if (use_fdm_action_) use_fdm_action_->setChecked(p.use_fdm);
+
+    statusBar()->showMessage(QString("Project loaded ← %1")
+                                 .arg(QFileInfo(path).fileName()));
+    spdlog::info("project: loaded from {}", path.toStdString());
 }

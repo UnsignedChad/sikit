@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QMainWindow>
+#include <QString>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -9,6 +10,7 @@
 #include "ibis/Ami.h"
 #include "model/Board.h"
 #include "touchstone/Touchstone.h"
+#include "project/Project.h"
 
 class PcbCanvas;
 class LayerPanel;
@@ -34,6 +36,8 @@ private slots:
     void onPlotNetSParam();
     void onPlotDiffPairSParam();
     void onOpenAmi();
+    void onOpenProject();
+    void onSaveProject();
 
 private:
     void populateLayerPanel();
@@ -49,6 +53,9 @@ private:
     // AMI runtime: parsed .ami parameter file + dynamic library loader.
     std::optional<sikit::ibis::ami::AmiFile> ami_file_;
     std::unique_ptr<sikit::ibis::ami::AmiModel> ami_model_;
+    QString ibis_source_path_;
+    QString ami_params_path_;
+    QString ami_library_path_;
 
     // Run a synthesised channel waveform through the loaded AMI model
     // (if any) as an RX equaliser. Edits  in place. No-op when no
@@ -63,4 +70,6 @@ private:
     QLabel* hover_label_;
     QAction* use_fdm_action_;
     std::unique_ptr<sikit::model::Board> board_;
+    QString current_pcb_path_;
+    QString current_project_path_;
 };

@@ -58,6 +58,7 @@ add_library(sikit_core STATIC
     src/em2d/CrossSection.cpp
     src/em2d/FdmSolver.cpp
     src/em2d/Rlgc.cpp
+    src/project/Project.cpp
 )
 target_include_directories(sikit_core PUBLIC src)
 target_include_directories(sikit_core PUBLIC third_party)
