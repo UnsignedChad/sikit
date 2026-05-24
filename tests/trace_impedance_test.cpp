@@ -253,9 +253,65 @@ TEST_CASE("compute_diff_pairs: finds pairs and computes Z_diff per pair", "[trac
     REQUIRE(pairs.size() == 1);
     REQUIRE(pairs[0].base_name == "USB_DP");
     REQUIRE(pairs[0].trace_width == 0.20e-3);
-    REQUIRE(pairs[0].spacing     == 0.20e-3);   // v0 default S = W
+    // Segments at y=0 (P) and y=0.30mm (N) → centre-to-centre 0.30 mm;
+    // both 0.20 mm wide → gap = 0.30 − 0.20 = 0.10 mm. Geometry
+    // estimator picks that up, so spacing is no longer the S=W default.
+    REQUIRE(pairs[0].spacing == Approx(0.10e-3).margin(1e-9));
     REQUIRE(pairs[0].z_diff      > 0);
     REQUIRE(pairs[0].segment_indices.size() == 4);  // 2 + 2 segments
+}
+
+TEST_CASE("compute_diff_pairs: spacing derived from parallel geometry", "[trace]") {
+    Board b;
+    b.stackup.layers.push_back({0, "F.Cu", "signal"});
+    b.nets.push_back({1, "USB_DP_P"});
+    b.nets.push_back({2, "USB_DP_N"});
+
+    // Two parallel horizontal traces 0.3 mm apart (centre-to-centre),
+    // each 0.15 mm wide → expected edge-to-edge gap = 0.3 - 0.15 = 0.15 mm.
+    auto add = [&](int net, double y) {
+        Segment s;
+        s.start = {0, y};
+        s.end   = {10e-3, y};
+        s.width = 0.15e-3;
+        s.layer_ordinal = 0;
+        s.net_id = net;
+        b.segments.push_back(s);
+    };
+    add(1, 0.0);
+    add(2, 0.3e-3);
+
+    AnalysisStackup as;
+    auto pairs = compute_diff_pairs(b, as, Engine::ClosedForm);
+    REQUIRE(pairs.size() == 1);
+    REQUIRE(pairs[0].spacing == Approx(0.15e-3).margin(1e-9));
+}
+
+TEST_CASE("compute_diff_pairs: spacing falls back to S=W if no parallel pair",
+          "[trace]") {
+    // Two segments oriented perpendicular to each other → spacing
+    // estimator finds nothing, so the result reverts to S = trace_width.
+    Board b;
+    b.stackup.layers.push_back({0, "F.Cu", "signal"});
+    b.nets.push_back({1, "X_P"});
+    b.nets.push_back({2, "X_N"});
+
+    auto add = [&](int net, Point2 start, Point2 end) {
+        Segment s;
+        s.start = start;
+        s.end = end;
+        s.width = 0.20e-3;
+        s.layer_ordinal = 0;
+        s.net_id = net;
+        b.segments.push_back(s);
+    };
+    add(1, {0, 0}, {10e-3, 0});       // horizontal
+    add(2, {5e-3, -5e-3}, {5e-3, 5e-3});  // vertical, crossing
+
+    AnalysisStackup as;
+    auto pairs = compute_diff_pairs(b, as, Engine::ClosedForm);
+    REQUIRE(pairs.size() == 1);
+    REQUIRE(pairs[0].spacing == Approx(0.20e-3));  // S = W fallback
 }
 
 TEST_CASE("compute_diff_pairs: returns empty when no diff pairs exist", "[trace]") {

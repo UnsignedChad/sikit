@@ -341,6 +341,67 @@ double median(std::vector<double> v) {
     return v[v.size() / 2];
 }
 
+// Estimate edge-to-edge spacing between two nets that are routed as a
+// diff pair. For each cross-net segment pair on `layer_ordinal` that is
+// (a) approximately parallel and (b) has its midpoints projecting onto
+// the other segment (so they're actually adjacent, not separated end-
+// to-end), compute the perpendicular centre-to-centre distance, then
+// subtract the average trace width to get the gap. Returns the median
+// of valid pair gaps, or -1 if no valid pair is found.
+double estimate_diff_pair_spacing(const model::Board& b,
+                                    int net_p_id, int net_n_id,
+                                    int layer_ordinal) {
+    constexpr double kParallelDot = 0.95;
+    std::vector<double> gaps;
+    for (const auto& sp : b.segments) {
+        if (sp.net_id != net_p_id || sp.layer_ordinal != layer_ordinal) continue;
+        const double pdx = sp.end.x - sp.start.x;
+        const double pdy = sp.end.y - sp.start.y;
+        const double plen = std::sqrt(pdx * pdx + pdy * pdy);
+        if (plen <= 0.0) continue;
+        const double pux = pdx / plen;
+        const double puy = pdy / plen;
+        const double pmx = 0.5 * (sp.start.x + sp.end.x);
+        const double pmy = 0.5 * (sp.start.y + sp.end.y);
+
+        for (const auto& sn : b.segments) {
+            if (sn.net_id != net_n_id || sn.layer_ordinal != layer_ordinal) continue;
+            const double ndx = sn.end.x - sn.start.x;
+            const double ndy = sn.end.y - sn.start.y;
+            const double nlen = std::sqrt(ndx * ndx + ndy * ndy);
+            if (nlen <= 0.0) continue;
+            const double nux = ndx / nlen;
+            const double nuy = ndy / nlen;
+
+            // Parallel (or anti-parallel) check.
+            if (std::abs(pux * nux + puy * nuy) < kParallelDot) continue;
+
+            const double nmx = 0.5 * (sn.start.x + sn.end.x);
+            const double nmy = 0.5 * (sn.start.y + sn.end.y);
+
+            // Project sn's midpoint onto sp's line to make sure they
+            // genuinely overlap rather than just point in the same
+            // direction. Param t along sp.
+            const double t_p = ((nmx - sp.start.x) * pux +
+                                (nmy - sp.start.y) * puy) / plen;
+            if (t_p < 0.0 || t_p > 1.0) continue;
+
+            // Perpendicular distance from sn's midpoint to sp's line.
+            const double dx = nmx - sp.start.x;
+            const double dy = nmy - sp.start.y;
+            const double cross = dx * puy - dy * pux;
+            const double centre_dist = std::abs(cross);
+
+            // Edge-to-edge gap = centre_dist − ½(W_p + W_n).
+            const double gap = centre_dist - 0.5 * (sp.width + sn.width);
+            if (gap > 0.0) gaps.push_back(gap);
+        }
+    }
+    if (gaps.empty()) return -1.0;
+    std::sort(gaps.begin(), gaps.end());
+    return gaps[gaps.size() / 2];
+}
+
 }  // namespace
 
 std::vector<DiffPairImpedance> compute_diff_pairs(
@@ -369,8 +430,14 @@ std::vector<DiffPairImpedance> compute_diff_pairs(
             continue;
         }
         r.trace_width = median(widths);
-        r.spacing = r.trace_width;  // v0 default; future: routing-derived
         r.layer_ordinal = 0;
+        // Try to recover the actual routed spacing from the segment
+        // geometry; fall back to S = W if the heuristic can't find a
+        // parallel-overlap pair (often happens for routed-as-couple
+        // diff pairs that haven't been laid out yet).
+        const double geom_gap =
+            estimate_diff_pair_spacing(board, dp.net_p_id, dp.net_n_id, 0);
+        r.spacing = (geom_gap > 0.0) ? geom_gap : r.trace_width;
 
         if (engine == Engine::Fdm) {
             r.z_diff = compute_diff_z0_fdm(r.trace_width, r.spacing,
