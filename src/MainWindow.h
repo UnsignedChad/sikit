@@ -35,6 +35,7 @@ private slots:
     void onOpenSParamPlot();
     void onPlotNetSParam();
     void onPlotDiffPairSParam();
+    void onPlotViaSParam();
     void onOpenAmi();
     void onOpenProject();
     void onSaveProject();

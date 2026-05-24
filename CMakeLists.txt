@@ -45,6 +45,7 @@ add_library(sikit_core STATIC
     src/analysis/TraceImpedance.cpp
     src/analysis/ChannelSynthesis.cpp
     src/analysis/DiffSynth.cpp
+    src/analysis/ViaModel.cpp
     src/ibis/Ibis.cpp
     src/ibis/Ami.cpp
     src/dispersion/DjordjevicSarkar.cpp

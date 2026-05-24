@@ -22,6 +22,7 @@
 #include "PcbCanvas.h"
 #include "analysis/ChannelSynthesis.h"
 #include "analysis/DiffSynth.h"
+#include "analysis/ViaModel.h"
 #include "analysis/TraceImpedance.h"
 #include "dsp/ChannelResponse.h"
 #include "eye/Eye.h"
@@ -153,6 +154,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(plotNetS, &QAction::triggered, this, &MainWindow::onPlotNetSParam);
     auto* plotDpS = analyzeMenu->addAction("Plot S-parameters for diff pair (synthesised)...");
     connect(plotDpS, &QAction::triggered, this, &MainWindow::onPlotDiffPairSParam);
+    auto* plotViaS = analyzeMenu->addAction("Plot S-parameters for via (lumped model)...");
+    connect(plotViaS, &QAction::triggered, this, &MainWindow::onPlotViaSParam);
 
     hover_label_ = new QLabel(this);
     hover_label_->setMinimumWidth(0);
@@ -1359,4 +1362,114 @@ void MainWindow::onOpenProject() {
     statusBar()->showMessage(QString("Project loaded ← %1")
                                  .arg(QFileInfo(path).fileName()));
     spdlog::info("project: loaded from {}", path.toStdString());
+}
+
+// ---------- Via S-parameter plot (Tier 2.7) -----------------------------
+
+void MainWindow::onPlotViaSParam() {
+    // If a board is loaded, offer to pre-fill drill/pad/length from a via on it.
+    sikit::analysis::ViaSpec spec;
+    spec.drill_diameter   = 0.30e-3;
+    spec.pad_diameter     = 0.60e-3;
+    spec.antipad_diameter = 1.00e-3;
+    spec.total_length     = 1.6e-3;
+    spec.pad_to_plane_h   = 0.20e-3;
+    spec.stub_length      = 0.0;
+    spec.epsilon_r        = 4.3;
+    spec.tan_delta        = 0.02;
+
+    if (board_ && !board_->vias.empty()) {
+        QStringList items;
+        items << "(enter via dimensions manually)";
+        for (std::size_t i = 0; i < board_->vias.size(); ++i) {
+            const auto& v = board_->vias[i];
+            items << QString("via #%1  at (%2, %3) mm  drill %4 mm")
+                         .arg(i)
+                         .arg(v.at.x * 1e3, 0, 'f', 2)
+                         .arg(v.at.y * 1e3, 0, 'f', 2)
+                         .arg(v.drill * 1e3, 0, 'f', 3);
+        }
+        bool ok = false;
+        const QString choice = QInputDialog::getItem(
+            this, "Plot via S-parameters",
+            "Pick a via from the board (or enter manually):",
+            items, 0, false, &ok);
+        if (!ok) return;
+        if (choice != items.first()) {
+            // Parse out the index "via #N ..." and look up board_->vias[N].
+            const QString tag = choice.section(' ', 1, 1);  // "#N"
+            const int idx = tag.mid(1).toInt();
+            if (idx >= 0 && idx < static_cast<int>(board_->vias.size())) {
+                const auto& v = board_->vias[idx];
+                spec.drill_diameter = v.drill;
+                spec.pad_diameter   = v.outer_diameter;
+                // Antipad isn't in the .kicad_pcb; default to 1.5x pad.
+                spec.antipad_diameter = std::max(v.outer_diameter * 1.5,
+                                                 v.drill + 0.2e-3);
+                spec.total_length = board_->stackup.total_thickness;
+                // Stub: distance from to_layer to the bottom layer (very rough).
+                // For through-hole vias terminating on F.Cu (signal lands on F.Cu),
+                // stub = total length. We don't yet know which layer the signal
+                // lands on, so leave stub at 0 by default.
+            }
+        }
+    }
+
+    bool ok = false;
+    spec.drill_diameter = QInputDialog::getDouble(
+        this, "Via", "Drill diameter (mm):",
+        spec.drill_diameter * 1e3, 0.05, 5.0, 3, &ok) * 1e-3;
+    if (!ok) return;
+    spec.pad_diameter = QInputDialog::getDouble(
+        this, "Via", "Pad diameter (mm):",
+        spec.pad_diameter * 1e3, 0.05, 5.0, 3, &ok) * 1e-3;
+    if (!ok) return;
+    spec.antipad_diameter = QInputDialog::getDouble(
+        this, "Via", "Antipad diameter (mm):",
+        spec.antipad_diameter * 1e3, 0.05, 5.0, 3, &ok) * 1e-3;
+    if (!ok) return;
+    spec.total_length = QInputDialog::getDouble(
+        this, "Via", "Total via length (mm):",
+        spec.total_length * 1e3, 0.1, 10.0, 3, &ok) * 1e-3;
+    if (!ok) return;
+    spec.stub_length = QInputDialog::getDouble(
+        this, "Via", "Stub length (mm; 0 = backdrilled):",
+        spec.stub_length * 1e3, 0.0, 10.0, 3, &ok) * 1e-3;
+    if (!ok) return;
+
+    std::vector<double> freqs;
+    freqs.reserve(200);
+    const double f_lo = 10e6, f_hi = 50e9;   // higher than usual to capture stub notch
+    for (int i = 0; i < 200; ++i) {
+        const double t = static_cast<double>(i) / 199.0;
+        freqs.push_back(f_lo + t * (f_hi - f_lo));
+    }
+
+    sikit::touchstone::TouchstoneFile ts;
+    try {
+        ts = sikit::analysis::compute_via_s2p(spec, freqs, 50.0);
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Plot via S-parameters", e.what());
+        return;
+    }
+
+    const auto lumped = sikit::analysis::via_lumped(spec);
+
+    auto* w = new SParamPlotWindow(this);
+    w->setWindowFlag(Qt::Window);
+    w->setData(ts);
+    w->setTitleSubtext(
+        QString("via lumped model · d=%1mm D=%2mm h=%3mm  ·  L=%4nH C=%5pF"
+                "%6")
+            .arg(spec.drill_diameter   * 1e3, 0, 'f', 3)
+            .arg(spec.antipad_diameter * 1e3, 0, 'f', 3)
+            .arg(spec.total_length     * 1e3, 0, 'f', 3)
+            .arg(lumped.L_barrel * 1e9, 0, 'f', 2)
+            .arg(lumped.C_pad    * 1e12, 0, 'f', 2)
+            .arg(spec.stub_length > 0
+                     ? QString("  stub %1mm → f_res≈%2GHz")
+                           .arg(spec.stub_length * 1e3, 0, 'f', 2)
+                           .arg(lumped.stub_resonance_hz / 1e9, 0, 'f', 1)
+                     : ""));
+    w->show();
 }
