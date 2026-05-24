@@ -3,9 +3,12 @@
 #include <QMainWindow>
 #include <memory>
 #include <optional>
+#include <vector>
 
 #include "ibis/Ibis.h"
+#include "ibis/Ami.h"
 #include "model/Board.h"
+#include "touchstone/Touchstone.h"
 
 class PcbCanvas;
 class LayerPanel;
@@ -30,6 +33,7 @@ private slots:
     void onOpenSParamPlot();
     void onPlotNetSParam();
     void onPlotDiffPairSParam();
+    void onOpenAmi();
 
 private:
     void populateLayerPanel();
@@ -41,6 +45,18 @@ private:
     // the eye-diagram pipeline to derive a realistic TX ramp time.
     std::optional<sikit::ibis::IbisFile> ibis_file_;
     std::string active_ibis_model_;
+
+    // AMI runtime: parsed .ami parameter file + dynamic library loader.
+    std::optional<sikit::ibis::ami::AmiFile> ami_file_;
+    std::unique_ptr<sikit::ibis::ami::AmiModel> ami_model_;
+
+    // Run a synthesised channel waveform through the loaded AMI model
+    // (if any) as an RX equaliser. Edits  in place. No-op when no
+    // .so is loaded or the model lacks AMI_Init.
+    void applyAmiIfLoaded(
+        const sikit::touchstone::TouchstoneFile& channel,
+        double sample_rate_hz, double bit_time_s,
+        std::vector<double>& wave);
 
     PcbCanvas* canvas_;
     LayerPanel* layer_panel_;

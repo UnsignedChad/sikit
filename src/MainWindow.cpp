@@ -27,6 +27,7 @@
 #include "eye/Eye.h"
 #include "highspeed/DiffPair.h"
 #include "ibis/Ibis.h"
+#include "ibis/Ami.h"
 #include "parser/KicadPcbParser.h"
 #include "specs/EyeMask.h"
 #include "touchstone/Touchstone.h"
@@ -65,6 +66,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     auto* openIbis = fileMenu->addAction("Open &IBIS file...");
     openIbis->setShortcut(QKeySequence("Ctrl+I"));
     connect(openIbis, &QAction::triggered, this, &MainWindow::onOpenIbis);
+    auto* openAmi = fileMenu->addAction("Open A&MI model...");
+    openAmi->setShortcut(QKeySequence("Ctrl+M"));
+    connect(openAmi, &QAction::triggered, this, &MainWindow::onOpenAmi);
     auto* openSPlot = fileMenu->addAction("&Plot S-parameters from file...");
     openSPlot->setShortcut(QKeySequence("Ctrl+P"));
     connect(openSPlot, &QAction::triggered, this, &MainWindow::onOpenSParamPlot);
@@ -209,6 +213,10 @@ void MainWindow::onOpenTouchstoneEye() {
     auto tx = (ramp_frac > 0.0)
                   ? sikit::eye::nrz_with_ramp(bits, kSpu, ramp_frac)
                   : sikit::eye::nrz_waveform(bits, kSpu);
+    if (ami_model_ && ami_file_) {
+        tx_label += QString(" → AMI %1")
+                        .arg(QString::fromStdString(ami_file_->model_name));
+    }
 
     std::vector<double> rx;
     try {
@@ -733,6 +741,9 @@ void MainWindow::onSynthesizeEye() {
         QMessageBox::critical(this, "Apply synthesized channel failed", e.what());
         return;
     }
+    // Apply RX-side AMI equalization, if a model has been loaded.
+    const double bit_time = 1.0 / baud;
+    applyAmiIfLoaded(channel, fs, bit_time, rx);
     auto eye = sikit::eye::build_eye(rx, kSpu, 128, 96, /*warmup=*/8);
     const auto& mask = sikit::specs::usb20_hs_template1();
 
@@ -1125,4 +1136,114 @@ void MainWindow::onPlotDiffPairSParam() {
                            .arg(meta.spacing     * 1e3, 0, 'f', 3)
                            .arg(total_length     * 1e3, 0, 'f', 1));
     w->show();
+}
+
+
+// ---------- AMI (Tier 1.4) ----------------------------------------------
+
+void MainWindow::onOpenAmi() {
+    // Step 1: pick the .ami parameter file.
+    const QString ami_path = QFileDialog::getOpenFileName(
+        this, "Open IBIS-AMI parameter file (.ami)", QString(),
+        "AMI parameter (*.ami);;All files (*)");
+    if (ami_path.isEmpty()) return;
+
+    sikit::ibis::ami::AmiFile f;
+    try {
+        f = sikit::ibis::ami::AmiParser::read_file(ami_path.toStdString());
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Open AMI parameter file failed", e.what());
+        return;
+    }
+
+    // Step 2: pick the matching shared library. Default the suggested
+    // filename to the same stem as the .ami so users with vendor packages
+    // (where the two live next to each other) get a one-click pick.
+    const QString stem = QFileInfo(ami_path).completeBaseName();
+    const QString lib_dir = QFileInfo(ami_path).absolutePath();
+    const QString lib_path = QFileDialog::getOpenFileName(
+        this, "Open IBIS-AMI library (.so / .dll / .dylib)",
+        lib_dir + "/" + stem,
+        "AMI library (*.so *.dll *.dylib);;All files (*)");
+    if (lib_path.isEmpty()) return;
+
+    std::unique_ptr<sikit::ibis::ami::AmiModel> mdl;
+    try {
+        mdl = std::make_unique<sikit::ibis::ami::AmiModel>(
+            std::filesystem::path(lib_path.toStdString()));
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Load AMI library failed", e.what());
+        return;
+    }
+    if (!mdl->init_available()) {
+        QMessageBox::warning(this, "Open AMI",
+                              "Loaded library does not export AMI_Init. "
+                              "AMI integration disabled.");
+        return;
+    }
+
+    ami_file_  = std::move(f);
+    ami_model_ = std::move(mdl);
+    statusBar()->showMessage(
+        QString("AMI loaded: %1 + %2 — eye pipeline will apply this model as RX.")
+            .arg(QFileInfo(ami_path).fileName())
+            .arg(QFileInfo(lib_path).fileName()));
+    spdlog::info("ami: loaded params={} lib={} model={}",
+                 ami_path.toStdString(), lib_path.toStdString(),
+                 ami_file_->model_name);
+}
+
+void MainWindow::applyAmiIfLoaded(
+    const sikit::touchstone::TouchstoneFile& channel,
+    double sample_rate_hz, double bit_time_s,
+    std::vector<double>& wave) {
+    if (!ami_model_ || !ami_model_->init_available() || wave.empty()) return;
+
+    // Build the channel impulse response by passing a unit delta through the
+    // same apply_channel path the waveform took. Cap to 1024 samples — vendor
+    // models typically choke on very long impulses, and the post-channel UI
+    // is already band-limited to a few ns of memory.
+    const std::size_t row_size = std::min<std::size_t>(wave.size(), 1024);
+    std::vector<double> impulse(row_size, 0.0);
+    impulse[0] = 1.0;
+    std::vector<double> h;
+    try {
+        h = sikit::dsp::apply_channel(impulse, sample_rate_hz, channel);
+    } catch (...) {
+        return;
+    }
+    if (h.size() < row_size) {
+        // Pad if the channel returned fewer samples than asked.
+        h.resize(row_size, 0.0);
+    }
+    std::vector<double> impulse_matrix(h.begin(), h.begin() + row_size);
+
+    const double dt = 1.0 / sample_rate_hz;
+    const std::string params_in = "(" + (ami_file_ ? ami_file_->model_name
+                                                   : std::string("model")) + ")";
+    try {
+        auto ir = ami_model_->init(impulse_matrix,
+                                   static_cast<long>(row_size), /*aggressors=*/0,
+                                   dt, bit_time_s, params_in);
+        if (ir.return_code != 1) {
+            spdlog::warn("AMI_Init returned {} — skipping equalization",
+                         ir.return_code);
+            return;
+        }
+    } catch (const std::exception& e) {
+        spdlog::warn("AMI_Init threw: {}", e.what());
+        return;
+    }
+
+    if (!ami_model_->has_get_wave()) return;
+
+    std::vector<double> clock_times;
+    try {
+        auto gr = ami_model_->get_wave(wave, clock_times);
+        if (gr.return_code != 1) {
+            spdlog::warn("AMI_GetWave returned {}", gr.return_code);
+        }
+    } catch (const std::exception& e) {
+        spdlog::warn("AMI_GetWave threw: {}", e.what());
+    }
 }
