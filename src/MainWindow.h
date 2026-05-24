@@ -27,6 +27,9 @@ private slots:
     void onExportNetCsv();
     void onExportDiffPairS4p();
     void onOpenIbis();
+    void onOpenSParamPlot();
+    void onPlotNetSParam();
+    void onPlotDiffPairSParam();
 
 private:
     void populateLayerPanel();

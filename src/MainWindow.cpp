@@ -17,6 +17,7 @@
 #include <cmath>
 
 #include "EyeWindow.h"
+#include "SParamPlotWindow.h"
 #include "LayerPanel.h"
 #include "PcbCanvas.h"
 #include "analysis/ChannelSynthesis.h"
@@ -64,6 +65,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     auto* openIbis = fileMenu->addAction("Open &IBIS file...");
     openIbis->setShortcut(QKeySequence("Ctrl+I"));
     connect(openIbis, &QAction::triggered, this, &MainWindow::onOpenIbis);
+    auto* openSPlot = fileMenu->addAction("&Plot S-parameters from file...");
+    openSPlot->setShortcut(QKeySequence("Ctrl+P"));
+    connect(openSPlot, &QAction::triggered, this, &MainWindow::onOpenSParamPlot);
     fileMenu->addSeparator();
     auto* exportTs = fileMenu->addAction("Export &net as Touchstone .s2p...");
     exportTs->setShortcut(QKeySequence("Ctrl+Shift+S"));
@@ -132,6 +136,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     eyeSynth->setShortcut(QKeySequence("Ctrl+Y"));
     connect(eyeSynth, &QAction::triggered, this,
             &MainWindow::onSynthesizeEye);
+    analyzeMenu->addSeparator();
+    auto* plotNetS = analyzeMenu->addAction("Plot S-parameters for &net (synthesised)...");
+    plotNetS->setShortcut(QKeySequence("Ctrl+Shift+P"));
+    connect(plotNetS, &QAction::triggered, this, &MainWindow::onPlotNetSParam);
+    auto* plotDpS = analyzeMenu->addAction("Plot S-parameters for diff pair (synthesised)...");
+    connect(plotDpS, &QAction::triggered, this, &MainWindow::onPlotDiffPairSParam);
 
     hover_label_ = new QLabel(this);
     hover_label_->setMinimumWidth(0);
@@ -914,4 +924,195 @@ bool MainWindow::loadKicadPcb(const QString& path) {
         spdlog::error("failed to load {}: {}", path.toStdString(), e.what());
         return false;
     }
+}
+
+
+// ---------- S-parameter plot slots (Tier 1.1) ---------------------------
+
+void MainWindow::onOpenSParamPlot() {
+    const QString path = QFileDialog::getOpenFileName(
+        this, "Open Touchstone file", QString(),
+        "Touchstone (*.s1p *.s2p *.s4p *.s8p);;All files (*)");
+    if (path.isEmpty()) return;
+    sikit::touchstone::TouchstoneFile ts;
+    try {
+        ts = sikit::touchstone::TouchstoneReader::read_file(path.toStdString());
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Plot S-parameters", e.what());
+        return;
+    }
+    auto* w = new SParamPlotWindow(this);
+    w->setWindowFlag(Qt::Window);
+    w->setData(ts);
+    w->setTitleSubtext(QFileInfo(path).fileName());
+    w->show();
+}
+
+void MainWindow::onPlotNetSParam() {
+    if (!board_) {
+        QMessageBox::information(this, "Plot net S-parameters",
+                                 "Open a KiCad PCB first.");
+        return;
+    }
+    auto hs_ids = sikit::highspeed::find_high_speed_nets(*board_);
+    if (hs_ids.empty()) {
+        QMessageBox::information(this, "Plot net S-parameters",
+                                 "No high-speed nets detected.");
+        return;
+    }
+    QStringList items;
+    for (int nid : hs_ids) {
+        if (const auto* n = board_->find_net(nid)) {
+            items << QString::fromStdString(n->name);
+        }
+    }
+    bool ok = false;
+    const QString choice = QInputDialog::getItem(
+        this, "Plot net S-parameters", "Net:", items, 0, false, &ok);
+    if (!ok) return;
+
+    int target_net = -1;
+    if (const auto* n = board_->find_net_by_name(choice.toStdString())) {
+        target_net = n->id;
+    }
+    if (target_net < 0) return;
+
+    std::vector<double> widths;
+    double total_length = 0.0;
+    for (const auto& seg : board_->segments) {
+        if (seg.net_id != target_net) continue;
+        if (seg.layer_ordinal != 0) continue;
+        widths.push_back(seg.width);
+        const double dx = seg.end.x - seg.start.x;
+        const double dy = seg.end.y - seg.start.y;
+        total_length += std::sqrt(dx * dx + dy * dy);
+    }
+    if (widths.empty() || total_length <= 0.0) {
+        QMessageBox::warning(this, "Plot net S-parameters",
+                              "Net has no F.Cu segments to model.");
+        return;
+    }
+    std::sort(widths.begin(), widths.end());
+    const double trace_width = widths[widths.size() / 2];
+
+    sikit::analysis::ChannelSpec spec;
+    spec.trace_width = trace_width;
+    spec.layer_ordinal = 0;
+    spec.length_m = total_length;
+    spec.stackup = sikit::analysis::AnalysisStackup::from_board(*board_);
+    spec.engine = sikit::analysis::Engine::ClosedForm;
+
+    std::vector<double> freqs;
+    freqs.reserve(200);
+    const double f_lo = 10e6, f_hi = 20e9;
+    for (int i = 0; i < 200; ++i) {
+        const double t = static_cast<double>(i) / 199.0;
+        freqs.push_back(f_lo + t * (f_hi - f_lo));
+    }
+    sikit::touchstone::TouchstoneFile ts;
+    try {
+        ts = sikit::analysis::synthesize_channel(spec, freqs, 50.0);
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Plot net S-parameters", e.what());
+        return;
+    }
+
+    auto* w = new SParamPlotWindow(this);
+    w->setWindowFlag(Qt::Window);
+    w->setData(ts);
+    w->setTitleSubtext(QString("%1 (synthesised, W=%2mm L=%3mm)")
+                           .arg(choice)
+                           .arg(trace_width * 1e3, 0, 'f', 3)
+                           .arg(total_length * 1e3, 0, 'f', 1));
+    w->show();
+}
+
+void MainWindow::onPlotDiffPairSParam() {
+    if (!board_) {
+        QMessageBox::information(this, "Plot diff-pair S-parameters",
+                                 "Open a KiCad PCB first.");
+        return;
+    }
+    auto pairs = sikit::highspeed::find_diff_pairs(*board_);
+    if (pairs.empty()) {
+        QMessageBox::information(this, "Plot diff-pair S-parameters",
+                                 "No diff pairs detected on this board.");
+        return;
+    }
+    QStringList items;
+    for (const auto& dp : pairs) {
+        items << QString::fromStdString(dp.base_name);
+    }
+    bool ok = false;
+    const QString choice = QInputDialog::getItem(
+        this, "Plot diff-pair S-parameters", "Diff pair:", items, 0, false, &ok);
+    if (!ok) return;
+
+    const sikit::highspeed::DiffPair* picked = nullptr;
+    for (const auto& dp : pairs) {
+        if (QString::fromStdString(dp.base_name) == choice) { picked = &dp; break; }
+    }
+    if (!picked) return;
+
+    sikit::analysis::AnalysisStackup stackup =
+        sikit::analysis::AnalysisStackup::from_board(*board_);
+    auto dpz = sikit::analysis::compute_diff_pairs(
+        *board_, stackup, sikit::analysis::Engine::ClosedForm);
+    sikit::analysis::DiffPairImpedance meta;
+    bool found = false;
+    for (const auto& d : dpz) {
+        if (d.base_name == picked->base_name) { meta = d; found = true; break; }
+    }
+    if (!found || meta.trace_width <= 0.0) {
+        QMessageBox::warning(this, "Plot diff-pair S-parameters",
+                              "Diff pair has no F.Cu geometry to model.");
+        return;
+    }
+    double total_length = 0.0;
+    for (const auto& seg : board_->segments) {
+        if (seg.layer_ordinal != 0) continue;
+        if (seg.net_id != picked->net_p_id && seg.net_id != picked->net_n_id) continue;
+        const double dx = seg.end.x - seg.start.x;
+        const double dy = seg.end.y - seg.start.y;
+        total_length += std::sqrt(dx * dx + dy * dy);
+    }
+    total_length *= 0.5;
+    if (total_length <= 0.0) {
+        QMessageBox::warning(this, "Plot diff-pair S-parameters",
+                              "Diff pair has no F.Cu length to model.");
+        return;
+    }
+
+    sikit::analysis::DiffChannelSpec spec;
+    spec.trace_width = meta.trace_width;
+    spec.spacing     = meta.spacing;
+    spec.layer_ordinal = 0;
+    spec.length_m  = total_length;
+    spec.stackup   = stackup;
+
+    std::vector<double> freqs;
+    freqs.reserve(200);
+    const double f_lo = 10e6, f_hi = 20e9;
+    for (int i = 0; i < 200; ++i) {
+        const double t = static_cast<double>(i) / 199.0;
+        freqs.push_back(f_lo + t * (f_hi - f_lo));
+    }
+
+    sikit::touchstone::TouchstoneFile ts;
+    try {
+        ts = sikit::analysis::synthesize_diff_channel(spec, freqs, 50.0);
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Plot diff-pair S-parameters", e.what());
+        return;
+    }
+
+    auto* w = new SParamPlotWindow(this);
+    w->setWindowFlag(Qt::Window);
+    w->setData(ts);
+    w->setTitleSubtext(QString("%1 (diff, W=%2mm S=%3mm L=%4mm)")
+                           .arg(choice)
+                           .arg(meta.trace_width * 1e3, 0, 'f', 3)
+                           .arg(meta.spacing     * 1e3, 0, 'f', 3)
+                           .arg(total_length     * 1e3, 0, 'f', 1));
+    w->show();
 }

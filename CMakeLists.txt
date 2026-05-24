@@ -74,6 +74,7 @@ add_executable(sikit
     src/PcbCanvas.cpp
     src/LayerPanel.cpp
     src/EyeWindow.cpp
+    src/SParamPlotWindow.cpp
 )
 target_link_libraries(sikit PRIVATE
     sikit_core
