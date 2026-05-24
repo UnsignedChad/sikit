@@ -36,6 +36,7 @@ add_library(sikit_core STATIC
     src/render/ViaMesher.cpp
     src/touchstone/Touchstone.cpp
     src/impedance/Impedance.cpp
+    src/highspeed/DiffPair.cpp
 )
 target_include_directories(sikit_core PUBLIC src)
 target_include_directories(sikit_core PUBLIC third_party)

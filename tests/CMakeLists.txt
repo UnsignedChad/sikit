@@ -13,6 +13,7 @@ add_executable(sikit_tests
     hit_test.cpp
     touchstone_test.cpp
     impedance_test.cpp
+    diff_pair_test.cpp
 )
 
 target_link_libraries(sikit_tests PRIVATE
