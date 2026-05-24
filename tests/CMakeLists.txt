@@ -19,6 +19,7 @@ add_executable(sikit_tests
     eye_test.cpp
     eye_mask_test.cpp
     fft_test.cpp
+    channel_test.cpp
 )
 
 target_link_libraries(sikit_tests PRIVATE
