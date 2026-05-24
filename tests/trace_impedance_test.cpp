@@ -97,3 +97,53 @@ TEST_CASE("color_for_error: zero target returns gray", "[trace]") {
     REQUIRE(c.g == Approx(0.5f));
     REQUIRE(c.b == Approx(0.5f));
 }
+
+TEST_CASE("from_board: empty stackup → generic FR-4 defaults", "[trace]") {
+    Board b;  // no stackup items
+    auto s = AnalysisStackup::from_board(b);
+    REQUIRE_FALSE(s.from_real_stackup);
+    REQUIRE(s.epsilon_r == 4.4);
+    REQUIRE(s.outer_dielectric_height == 0.2e-3);
+}
+
+TEST_CASE("from_board: picks up dielectric below F.Cu", "[trace]") {
+    Board b;
+    b.stackup.layers.push_back({0, "F.Cu", "signal"});
+    StackupItem cu{StackupItem::Kind::Copper, "F.Cu", 35e-6, 0, 0, ""};
+    StackupItem die;
+    die.kind = StackupItem::Kind::Dielectric;
+    die.name = "dielectric 1";
+    die.thickness = 0.150e-3;
+    die.epsilon_r = 3.8;
+    b.stackup.items.push_back(cu);
+    b.stackup.items.push_back(die);
+
+    auto s = AnalysisStackup::from_board(b);
+    REQUIRE(s.from_real_stackup);
+    REQUIRE(s.outer_dielectric_height == Approx(0.150e-3));
+    REQUIRE(s.epsilon_r == Approx(3.8));
+    REQUIRE(s.copper_thickness == Approx(35e-6));
+}
+
+TEST_CASE("from_board: stripline B = sum of dielectric above + below inner copper",
+          "[trace]") {
+    Board b;
+    b.stackup.layers.push_back({0,  "F.Cu",  "signal"});
+    b.stackup.layers.push_back({1,  "In1.Cu","power"});
+    b.stackup.layers.push_back({31, "B.Cu",  "signal"});
+
+    auto push_item = [&](StackupItem::Kind k, std::string n, double t, double e = 0) {
+        StackupItem it;
+        it.kind = k; it.name = std::move(n); it.thickness = t; it.epsilon_r = e;
+        b.stackup.items.push_back(it);
+    };
+    push_item(StackupItem::Kind::Copper,     "F.Cu",   35e-6);
+    push_item(StackupItem::Kind::Dielectric, "prepreg", 0.10e-3, 4.5);
+    push_item(StackupItem::Kind::Copper,     "In1.Cu", 18e-6);
+    push_item(StackupItem::Kind::Dielectric, "core",    0.30e-3, 4.4);
+    push_item(StackupItem::Kind::Copper,     "B.Cu",   35e-6);
+
+    auto s = AnalysisStackup::from_board(b);
+    REQUIRE(s.from_real_stackup);
+    REQUIRE(s.inner_plane_separation == Approx(0.40e-3));  // 0.10 + 0.30
+}

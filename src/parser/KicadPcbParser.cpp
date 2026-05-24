@@ -86,6 +86,7 @@ public:
         }
         parse_general();
         parse_layers();
+        parse_setup_stackup();
         parse_nets();
         parse_segments();
         parse_vias();
@@ -128,6 +129,60 @@ private:
             L.type = std::string(expect_string_or_symbol(row.children[2]));
             layer_name_to_id_[L.name] = L.ordinal;
             board_.stackup.layers.push_back(std::move(L));
+        }
+    }
+
+    // (setup (stackup (layer "F.Cu" (type "copper") (thickness 0.035)) ...))
+    // KiCad 6+ describes the physical cross-section in the setup block.
+    // Each (layer ...) item here is a stack entry, not a logical layer
+    // (which we already parsed from the top-level (layers ...) form).
+    void parse_setup_stackup() {
+        const Node* setup = find_child(root_, "setup");
+        if (!setup) return;
+        const Node* stackup = find_child(*setup, "stackup");
+        if (!stackup) return;
+
+        for (const Node* it : find_children(*stackup, "layer")) {
+            if (it->children.size() < 2) continue;
+            model::StackupItem item;
+            item.name = std::string(expect_string_or_symbol(it->children[1]));
+
+            if (const Node* tnode = find_child(*it, "type")) {
+                if (tnode->children.size() >= 2) {
+                    std::string t = std::string(expect_string_or_symbol(tnode->children[1]));
+                    std::transform(t.begin(), t.end(), t.begin(),
+                                   [](unsigned char c) { return std::tolower(c); });
+                    if (t == "copper") {
+                        item.kind = model::StackupItem::Kind::Copper;
+                    } else if (t.find("dielectric") != std::string::npos ||
+                               t == "core" || t == "prepreg") {
+                        item.kind = model::StackupItem::Kind::Dielectric;
+                    } else if (t.find("solder mask") != std::string::npos) {
+                        item.kind = model::StackupItem::Kind::SolderMask;
+                    } else if (t.find("silk") != std::string::npos) {
+                        item.kind = model::StackupItem::Kind::Silkscreen;
+                    } else if (t.find("paste") != std::string::npos) {
+                        item.kind = model::StackupItem::Kind::Paste;
+                    }
+                }
+            }
+            if (const Node* th = find_child(*it, "thickness")) {
+                if (th->children.size() >= 2) {
+                    item.thickness = expect_number(th->children[1]) * kMmToM;
+                }
+            }
+            if (const Node* er = find_child(*it, "epsilon_r")) {
+                if (er->children.size() >= 2) item.epsilon_r = expect_number(er->children[1]);
+            }
+            if (const Node* lt = find_child(*it, "loss_tangent")) {
+                if (lt->children.size() >= 2) item.loss_tangent = expect_number(lt->children[1]);
+            }
+            if (const Node* m = find_child(*it, "material")) {
+                if (m->children.size() >= 2) {
+                    item.material = std::string(expect_string_or_symbol(m->children[1]));
+                }
+            }
+            board_.stackup.items.push_back(std::move(item));
         }
     }
 

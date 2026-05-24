@@ -172,7 +172,7 @@ void MainWindow::showImpedanceOverlay(double target_z0) {
                                  "Open a KiCad PCB first.");
         return;
     }
-    sikit::analysis::AnalysisStackup stackup;
+    const auto stackup = sikit::analysis::AnalysisStackup::from_board(*board_);
     auto results = sikit::analysis::compute_all(*board_, stackup);
     canvas_->setImpedanceOverlay(results, target_z0);
 
@@ -183,12 +183,19 @@ void MainWindow::showImpedanceOverlay(double target_z0) {
         else if (err < 0.10) ++warn;
         else ++fail;
     }
+    const QString stackup_src = stackup.from_real_stackup
+                                    ? "real stackup"
+                                    : "default FR-4";
     statusBar()->showMessage(
-        QString("Impedance overlay @ %1 Ω: %2 on-spec (<5%), %3 warn (<10%), %4 fail (≥10%)")
+        QString("Impedance overlay @ %1 Ω (%2): %3 on-spec (<5%), %4 warn (<10%), %5 fail (≥10%)")
             .arg(target_z0, 0, 'f', 0)
+            .arg(stackup_src)
             .arg(on_spec).arg(warn).arg(fail));
-    spdlog::info("impedance overlay target={}Ω: on-spec={} warn={} fail={}",
-                 target_z0, on_spec, warn, fail);
+    spdlog::info("impedance overlay target={}Ω stackup={} εr={:.2f} H={:.3f}mm: "
+                 "on-spec={} warn={} fail={}",
+                 target_z0, stackup.from_real_stackup ? "real" : "default",
+                 stackup.epsilon_r, stackup.outer_dielectric_height * 1e3,
+                 on_spec, warn, fail);
 }
 
 void MainWindow::showEyeDiagramDemo(bool severe_isi) {

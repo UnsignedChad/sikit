@@ -14,6 +14,7 @@ add_executable(sikit_tests
     touchstone_test.cpp
     impedance_test.cpp
     diff_pair_test.cpp
+    stackup_test.cpp
     trace_impedance_test.cpp
     sparam_test.cpp
     eye_test.cpp

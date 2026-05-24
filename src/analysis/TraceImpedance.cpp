@@ -12,7 +12,57 @@ bool is_outer_copper(int ord) {
     return ord == 0 || ord == 31;
 }
 
+// Find the thickness of any copper item in the stackup. Returns -1 if none.
+double first_copper_thickness(const model::Stackup& s) {
+    for (const auto& it : s.items) {
+        if (it.kind == model::StackupItem::Kind::Copper && it.thickness > 0.0) {
+            return it.thickness;
+        }
+    }
+    return -1.0;
+}
+
 }  // namespace
+
+AnalysisStackup AnalysisStackup::from_board(const model::Board& b) {
+    AnalysisStackup s;  // start from defaults
+
+    const model::StackupItem* outer_d = nullptr;
+    // For outer microstrip: dielectric immediately below F.Cu, or above B.Cu.
+    if (const auto* d = b.stackup.adjacent_dielectric("F.Cu", +1)) outer_d = d;
+    else if (const auto* d = b.stackup.adjacent_dielectric("B.Cu", -1)) outer_d = d;
+    else outer_d = b.stackup.any_dielectric();
+
+    if (outer_d) {
+        if (outer_d->thickness > 0.0) s.outer_dielectric_height = outer_d->thickness;
+        if (outer_d->epsilon_r > 0.0) s.epsilon_r = outer_d->epsilon_r;
+        s.from_real_stackup = true;
+    }
+
+    // For stripline: sum the two adjacent dielectric thicknesses on either
+    // side of the first inner copper layer (typical 4-layer board: prepreg
+    // above + core below = B).
+    for (const auto& L : b.stackup.layers) {
+        if (!L.is_copper() || is_outer_copper(L.ordinal)) continue;
+        const auto* above = b.stackup.adjacent_dielectric(L.name, -1);
+        const auto* below = b.stackup.adjacent_dielectric(L.name, +1);
+        double sep = 0.0;
+        if (above && above->thickness > 0.0) sep += above->thickness;
+        if (below && below->thickness > 0.0) sep += below->thickness;
+        if (sep > 0.0) {
+            s.inner_plane_separation = sep;
+            s.from_real_stackup = true;
+        }
+        break;  // first inner copper layer is enough for v0
+    }
+
+    const double cu_t = first_copper_thickness(b.stackup);
+    if (cu_t > 0.0) {
+        s.copper_thickness = cu_t;
+        s.from_real_stackup = true;
+    }
+    return s;
+}
 
 SegmentImpedance compute_one(double trace_width, int layer_ordinal,
                               const AnalysisStackup& s) {
@@ -67,17 +117,13 @@ std::vector<SegmentImpedance> compute_all(const model::Board& board,
 
 ImpedanceColor color_for_error(double z0_ohms, double target_ohms) {
     if (target_ohms <= 0.0 || z0_ohms <= 0.0) {
-        return {0.5f, 0.5f, 0.5f, 0.8f};  // gray = unknown
+        return {0.5f, 0.5f, 0.5f, 0.8f};
     }
     const double err = std::abs(z0_ohms - target_ohms) / target_ohms;
 
-    if (err < 0.05) {
-        return {0.25f, 0.85f, 0.30f, 0.85f};  // green
-    }
-    if (err < 0.10) {
-        return {0.95f, 0.85f, 0.20f, 0.85f};  // yellow
-    }
-    return {0.92f, 0.30f, 0.25f, 0.85f};      // red
+    if (err < 0.05) return {0.25f, 0.85f, 0.30f, 0.85f};
+    if (err < 0.10) return {0.95f, 0.85f, 0.20f, 0.85f};
+    return                  {0.92f, 0.30f, 0.25f, 0.85f};
 }
 
 }  // namespace sikit::analysis

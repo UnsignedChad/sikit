@@ -31,9 +31,39 @@ struct Layer {
     }
 };
 
+// One physical item in the board cross-section — parsed from KiCad's
+// (setup (stackup ...)) block. Order in Stackup::items is top-to-bottom.
+struct StackupItem {
+    enum class Kind { Copper, Dielectric, SolderMask, Silkscreen, Paste, Other };
+
+    Kind kind = Kind::Other;
+    std::string name;          // copper: matches a Layer.name; dielectric: e.g. "dielectric 1"
+    double thickness = 0.0;    // meters
+
+    // Dielectric-only fields. Default 0 → "not specified".
+    double epsilon_r = 0.0;
+    double loss_tangent = 0.0;
+    std::string material;
+};
+
 struct Stackup {
+    // Logical layer table from the top-level (layers ...) form.
     std::vector<Layer> layers;
+    // Physical cross-section items in top-to-bottom order. Empty if the
+    // board file doesn't include a (setup (stackup ...)) block.
+    std::vector<StackupItem> items;
+
     double total_thickness = 1.6e-3;  // meters; default 1.6mm board
+
+    // Find the first dielectric immediately adjacent to a copper-layer item
+    // with the given name. side = -1 → look above (earlier in items[]);
+    // side = +1 → look below (later). Returns nullptr if none found.
+    const StackupItem* adjacent_dielectric(std::string_view copper_name,
+                                            int side) const noexcept;
+
+    // Convenience: any dielectric anywhere in the stack (first one found).
+    // Useful as a fallback when adjacent_dielectric returns nothing.
+    const StackupItem* any_dielectric() const noexcept;
 };
 
 struct Net {
@@ -76,7 +106,6 @@ struct Polygon {
 
 // Copper pour. The 'outline' is the user-drawn boundary; 'filled' is the
 // post-processed copper after thermal reliefs and clearance subtraction.
-// PI analysis meshes 'filled' (that's the actual conductor).
 struct Zone {
     int net_id = 0;
     std::string net_name;
