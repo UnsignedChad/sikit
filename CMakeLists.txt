@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.25)
 project(sikit
     VERSION 0.0.1
     DESCRIPTION "Open-source Signal Integrity analysis for KiCad PCBs"
-    LANGUAGES CXX
+    LANGUAGES CXX C
 )
 
 set(CMAKE_CXX_STANDARD 20)
@@ -42,6 +42,7 @@ add_library(sikit_core STATIC
     src/analysis/TraceImpedance.cpp
     src/analysis/ChannelSynthesis.cpp
     src/ibis/Ibis.cpp
+    src/ibis/Ami.cpp
     src/dispersion/DjordjevicSarkar.cpp
     src/sparam/SParam.cpp
     src/eye/Eye.cpp

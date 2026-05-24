@@ -1,4 +1,10 @@
 find_package(Catch2 3 REQUIRED)
+# Stub AMI shared library used by ami_test.cpp
+add_library(stub_ami SHARED stub_ami.c)
+set_target_properties(stub_ami PROPERTIES
+    PREFIX "" SUFFIX ".so"
+    AUTOMOC OFF AUTOUIC OFF AUTORCC OFF
+    C_VISIBILITY_PRESET default)
 include(Catch)
 
 add_executable(sikit_tests
@@ -32,9 +38,11 @@ add_executable(sikit_tests
     em2d_test.cpp
     rlgc_test.cpp
     fdm_refined_test.cpp
+    ami_test.cpp
 )
 
 target_link_libraries(sikit_tests PRIVATE
+    ${CMAKE_DL_LIBS}
     sikit_core
     Catch2::Catch2WithMain
 )
