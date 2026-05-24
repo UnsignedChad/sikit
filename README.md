@@ -98,6 +98,7 @@ g++ also works; both compilers are CI-tested.
 | `Ctrl+Shift+S` | Export selected net as Touchstone `.s2p` |
 | `Ctrl+Shift+C` | Export selected net as frequency-sweep CSV |
 | `Home` | Fit board to viewport |
+| `Ctrl+D` | Toggle 3D stackup view (orbit camera; LMB rotate, MMB pan, wheel zoom) |
 | `Ctrl+1 / 2 / 3` | Trace impedance overlay at 50 / 90 / 100 Ω |
 | `Ctrl+Shift+2 / 3` | Diff-pair impedance overlay at 90 / 100 Ω |
 | `Ctrl+0` | Clear overlay |
