@@ -39,11 +39,10 @@ TEST_CASE("synthesize: zero-length channel is the identity 2-port", "[synth]") {
     }
 }
 
-TEST_CASE("synthesize: matched line (Z₀ = Zref) has |S21|=1 and S11=0", "[synth]") {
+TEST_CASE("synthesize: matched lossless line has |S21|=1 and S11=0", "[synth]") {
     auto spec = basic_spec();
-    // Pick a freq where this geometry's Z₀ from closed-form is ~50Ω.
-    // We pass Zref equal to that Z₀ so |S21| should be unity (lossless,
-    // perfectly matched).
+    spec.stackup.tan_delta = 0.0;
+    spec.stackup.sigma_copper = 1e30;   // effectively superconducting
     SegmentImpedance imp = compute_one(spec.trace_width, spec.layer_ordinal,
                                         spec.stackup);
     REQUIRE(imp.z0 > 0);
@@ -51,8 +50,8 @@ TEST_CASE("synthesize: matched line (Z₀ = Zref) has |S21|=1 and S11=0", "[synt
     std::vector<double> freqs{1e9, 5e9};
     auto t = synthesize_channel(spec, freqs, imp.z0);
     for (const auto& mat : t.s_matrices) {
-        REQUIRE(std::abs(mat[0]) == Approx(0.0).margin(1e-9));   // S11
-        REQUIRE(std::abs(mat[1]) == Approx(1.0).margin(1e-9));   // |S21|
+        REQUIRE(std::abs(mat[0]) == Approx(0.0).margin(1e-9));
+        REQUIRE(std::abs(mat[1]) == Approx(1.0).margin(1e-9));
     }
 }
 
@@ -83,10 +82,13 @@ TEST_CASE("synthesize: reciprocal — S12 == S21", "[synth]") {
 }
 
 TEST_CASE("synthesize: phase delay matches v_phase · l", "[synth]") {
-    // For a matched line S21 = e^(-jβl). atan2 returns the phase wrapped
-    // to (-π, π], so we wrap the expected phase the same way before
-    // comparing.
+    // For a matched lossless line S21 = e^(-jβl). atan2 returns the phase
+    // wrapped to (-π, π], so we wrap the expected phase the same way
+    // before comparing. Disable loss so the magnitude doesn't perturb
+    // the phase test.
     auto spec = basic_spec();
+    spec.stackup.tan_delta = 0.0;
+    spec.stackup.sigma_copper = 1e30;
     SegmentImpedance imp = compute_one(spec.trace_width, spec.layer_ordinal,
                                         spec.stackup);
     const double f = 2e9;
@@ -105,4 +107,31 @@ TEST_CASE("synthesize: throws on invalid geometry", "[synth]") {
     spec.layer_ordinal = 0;
     spec.length_m = 0.05;
     REQUIRE_THROWS(synthesize_channel(spec, {1e9}));
+}
+
+TEST_CASE("synthesize: lossy matched line has |S21| < 1 at high frequency", "[synth]") {
+    auto spec = basic_spec();
+    spec.length_m = 0.30;            // 30cm — enough loss to be measurable
+    spec.stackup.tan_delta = 0.02;   // FR-4 default
+    SegmentImpedance imp = compute_one(spec.trace_width, spec.layer_ordinal,
+                                        spec.stackup);
+    auto t = synthesize_channel(spec, {1e9, 5e9, 10e9}, imp.z0);
+    const double mag_1g  = std::abs(t.s_matrices[0][1]);
+    const double mag_5g  = std::abs(t.s_matrices[1][1]);
+    const double mag_10g = std::abs(t.s_matrices[2][1]);
+    // Matched-but-lossy: |S21| < 1 and decreases with frequency.
+    REQUIRE(mag_1g  < 1.0);
+    REQUIRE(mag_5g  < mag_1g);
+    REQUIRE(mag_10g < mag_5g);
+}
+
+TEST_CASE("synthesize: zero loss reproduces lossless behavior", "[synth]") {
+    auto spec = basic_spec();
+    spec.length_m = 0.30;
+    spec.stackup.tan_delta = 0.0;
+    spec.stackup.sigma_copper = 1e30;   // effectively superconducting
+    SegmentImpedance imp = compute_one(spec.trace_width, spec.layer_ordinal,
+                                        spec.stackup);
+    auto t = synthesize_channel(spec, {5e9}, imp.z0);
+    REQUIRE(std::abs(t.s_matrices[0][1]) == Approx(1.0).margin(1e-6));
 }

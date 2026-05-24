@@ -101,6 +101,7 @@ AnalysisStackup AnalysisStackup::from_board(const model::Board& b) {
     if (outer_d) {
         if (outer_d->thickness > 0.0) s.outer_dielectric_height = outer_d->thickness;
         if (outer_d->epsilon_r > 0.0) s.epsilon_r = outer_d->epsilon_r;
+        if (outer_d->loss_tangent > 0.0) s.tan_delta = outer_d->loss_tangent;
         s.from_real_stackup = true;
     }
 

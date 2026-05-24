@@ -23,6 +23,11 @@ struct AnalysisStackup {
     double inner_plane_separation = 0.4e-3;
     double copper_thickness = 35e-6;
     double epsilon_r = 4.4;
+
+    // Loss parameters (default FR-4 / 1oz copper).
+    double tan_delta     = 0.02;        // dielectric loss tangent
+    double sigma_copper  = 5.8e7;       // S/m (annealed copper)
+
     bool   from_real_stackup = false;
 
     static AnalysisStackup from_board(const model::Board& b);
