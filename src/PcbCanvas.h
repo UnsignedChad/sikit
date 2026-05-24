@@ -13,16 +13,22 @@
 #include "analysis/TraceImpedance.h"
 #include "model/Board.h"
 #include "render/Camera2D.h"
+#include "render/Camera3D.h"
 #include "render/SegmentMesher.h"
 
 class PcbCanvas : public QOpenGLWidget, protected QOpenGLFunctions_3_3_Core {
     Q_OBJECT
 public:
+    enum class ViewMode { D2, D3 };
+
     explicit PcbCanvas(QWidget* parent = nullptr);
 
     void setBoard(const sikit::model::Board* board);
     void setLayerVisibility(int ordinal, bool visible);
     void fitToBoard();
+
+    void setViewMode(ViewMode mode);
+    ViewMode viewMode() const { return view_mode_; }
 
     // Build and upload a colored impedance-error overlay over the board's
     // segments. Pass an empty results vector to clear.
@@ -55,6 +61,8 @@ private:
     };
 
     sikit::render::Camera2D camera_;
+    sikit::render::Camera3D camera3d_;
+    ViewMode view_mode_ = ViewMode::D2;
     const sikit::model::Board* board_ = nullptr;
 
     // Flat-color shader: grid + per-layer board fills.

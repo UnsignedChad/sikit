@@ -72,6 +72,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     auto* fitAct = viewMenu->addAction("&Fit to Board");
     fitAct->setShortcut(QKeySequence(Qt::Key_Home));
     connect(fitAct, &QAction::triggered, canvas_, &PcbCanvas::fitToBoard);
+    auto* threeDAct = viewMenu->addAction("&3D mode");
+    threeDAct->setShortcut(QKeySequence("Ctrl+D"));
+    threeDAct->setCheckable(true);
+    connect(threeDAct, &QAction::toggled, canvas_, [this](bool on) {
+        canvas_->setViewMode(on ? PcbCanvas::ViewMode::D3
+                                : PcbCanvas::ViewMode::D2);
+    });
     viewMenu->addAction(dock->toggleViewAction());
 
     auto* analyzeMenu = menuBar()->addMenu("&Analyze");

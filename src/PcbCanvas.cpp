@@ -90,6 +90,13 @@ void PcbCanvas::setLayerVisibility(int ordinal, bool visible) {
     update();
 }
 
+void PcbCanvas::setViewMode(ViewMode mode) {
+    if (view_mode_ == mode) return;
+    view_mode_ = mode;
+    if (mode == ViewMode::D3) fitToBoard();
+    update();
+}
+
 void PcbCanvas::fitToBoard() {
     if (!board_) return;
     bool have_any = false;
@@ -116,6 +123,9 @@ void PcbCanvas::fitToBoard() {
     if (have_any) {
         camera_.fit_to_bounds({lo_x, lo_y}, {hi_x, hi_y},
                                width(), height(), 0.10);
+        const double z_mid = 0.5 * board_->stackup.total_thickness;
+        camera3d_.fit_to_bounds({lo_x, lo_y}, {hi_x, hi_y},
+                                 z_mid, width(), height(), 0.15);
         update();
     }
 }
@@ -331,6 +341,15 @@ void PcbCanvas::paintGL() {
     if (meshes_dirty_) uploadBoardMeshes();
     if (overlay_dirty_) uploadOverlay();
 
+    if (view_mode_ == ViewMode::D3) {
+        // 3D meshes/shaders land in the next commit. For now clear to a
+        // distinct background so the mode toggle is visible end-to-end.
+        glClearColor(0.06f, 0.07f, 0.10f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glClearColor(0.10f, 0.10f, 0.12f, 1.0f);
+        return;
+    }
+
     glClear(GL_COLOR_BUFFER_BIT);
 
     const auto m = camera_.ortho_matrix(width(), height());
@@ -384,6 +403,23 @@ void PcbCanvas::mousePressEvent(QMouseEvent* e) {
 }
 
 void PcbCanvas::mouseMoveEvent(QMouseEvent* e) {
+    if (view_mode_ == ViewMode::D3) {
+        if (panning_) {
+            const QPoint d = e->pos() - last_mouse_;
+            if (e->buttons() & Qt::MiddleButton) {
+                camera3d_.pan_pixels(d.x(), d.y(), height());
+            } else {
+                camera3d_.orbit_pixels(d.x(), d.y(), height());
+            }
+            last_mouse_ = e->pos();
+            update();
+        }
+        // 3D hover-pick lives with the rest of the 3D pipeline; for now keep
+        // the status bar empty in 3D mode rather than reporting a wrong layer.
+        emit hoverInfo(QString());
+        return;
+    }
+
     if (panning_) {
         const QPoint d = e->pos() - last_mouse_;
         camera_.pan_pixels(d.x(), d.y());
@@ -425,6 +461,12 @@ void PcbCanvas::mouseReleaseEvent(QMouseEvent* e) {
 
 void PcbCanvas::wheelEvent(QWheelEvent* e) {
     const double factor = (e->angleDelta().y() > 0) ? 1.20 : 1.0 / 1.20;
+    if (view_mode_ == ViewMode::D3) {
+        // Wheel-up should bring the board closer → shrink orbit distance.
+        camera3d_.zoom(1.0 / factor);
+        update();
+        return;
+    }
     const QPointF pos = e->position();
     camera_.zoom_at(pos.x(), pos.y(), factor, width(), height());
     update();
