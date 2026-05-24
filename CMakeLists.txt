@@ -41,6 +41,7 @@ add_library(sikit_core STATIC
     src/sparam/SParam.cpp
     src/eye/Eye.cpp
     src/specs/EyeMask.cpp
+    src/dsp/Fft.cpp
 )
 target_include_directories(sikit_core PUBLIC src)
 target_include_directories(sikit_core PUBLIC third_party)
