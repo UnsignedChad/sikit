@@ -30,6 +30,7 @@ add_executable(sikit_tests
     fft_test.cpp
     channel_test.cpp
     em2d_test.cpp
+    rlgc_test.cpp
 )
 
 target_link_libraries(sikit_tests PRIVATE

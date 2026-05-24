@@ -51,6 +51,7 @@ add_library(sikit_core STATIC
     src/dsp/ChannelResponse.cpp
     src/em2d/CrossSection.cpp
     src/em2d/FdmSolver.cpp
+    src/em2d/Rlgc.cpp
 )
 target_include_directories(sikit_core PUBLIC src)
 target_include_directories(sikit_core PUBLIC third_party)
