@@ -5,16 +5,18 @@
 //             → ABCD per frequency → S-params (Touchstone)
 //             → eye-diagram channel
 //
-// This lets us draw an eye from any board trace without needing a
-// measured / simulated S2P from an external tool. Math assumes a
-// lossless TEM transmission line for v0; loss models (resistive,
-// dielectric tangent δ, skin effect) land in a follow-up.
+// Optionally drives the channel with a Djordjevic-Sarkar dispersion
+// model so εr and tan δ vary with frequency the way they actually do
+// in FR-4 / Rogers / etc. Without a model, behaviour reverts to the
+// constant-εr / constant-tan_δ behaviour of the earlier versions.
 
 #pragma once
 
+#include <optional>
 #include <vector>
 
 #include "analysis/TraceImpedance.h"
+#include "dispersion/DjordjevicSarkar.h"
 #include "touchstone/Touchstone.h"
 
 namespace sikit::analysis {
@@ -25,11 +27,14 @@ struct ChannelSpec {
     double length_m = 0.0;          // physical trace length
     AnalysisStackup stackup;
     Engine engine = Engine::ClosedForm;
+
+    // Optional frequency-dependent material model. When set, εr and
+    // tan δ at each frequency point come from this model instead of
+    // the constant stackup values. Construct via
+    //     dispersion::DjordjevicSarkar::from_reference(eps_r, tan_d, f0)
+    std::optional<dispersion::DjordjevicSarkar> dispersion_model;
 };
 
-// Generate a 2-port Touchstone file representing `spec.length_m` of
-// trace with the given cross-section, sampled at the requested
-// frequencies. Reference impedance defaults to 50 Ω.
 sikit::touchstone::TouchstoneFile synthesize_channel(
     const ChannelSpec& spec,
     const std::vector<double>& freq_hz,

@@ -19,6 +19,8 @@ add_executable(sikit_tests
     trace_impedance_test.cpp
     channel_synthesis_test.cpp
     ibis_test.cpp
+    djordjevic_sarkar_test.cpp
+    channel_dispersion_test.cpp
     sparam_test.cpp
     eye_test.cpp
     eye_ramp_test.cpp

@@ -11,16 +11,21 @@ using Complex = std::complex<double>;
 
 namespace {
 
-constexpr double kC0 = 2.99792458e8;
-constexpr double kMu0 = 4.0 * std::numbers::pi * 1.0e-7;  // H/m
+constexpr double kC0  = 2.99792458e8;
+constexpr double kMu0 = 4.0 * std::numbers::pi * 1.0e-7;
 
-// Per-unit-length attenuation (Np/m) for a microstrip-style line at one
-// frequency. Two contributions:
-//   * Conductor loss: skin-effect surface resistance Rs = √(π f μ₀ / σ)
-//     divided by trace width gives R(f) Ω/m; α_c = R / (2·Z₀).
-//   * Dielectric loss: α_d = (π f √εr_eff / c) · tan δ.
-double total_alpha(double f, double trace_width, double Z0, double eps_eff,
-                    double tan_delta, double sigma_copper) {
+// Effective permittivity for microstrip via Hammerstad. Used when we
+// need to re-derive eps_eff at each frequency with a freshly dispersed
+// εr from the DS model.
+double microstrip_eps_eff(double w, double h, double eps_r) {
+    if (h <= 0.0 || w <= 0.0) return eps_r;
+    const double wh = w / h;
+    return 0.5 * (eps_r + 1.0) +
+           0.5 * (eps_r - 1.0) / std::sqrt(1.0 + 12.0 / wh);
+}
+
+double per_freq_alpha(double f, double trace_width, double Z0, double eps_eff,
+                      double tan_delta, double sigma_copper) {
     if (trace_width <= 0.0 || Z0 <= 0.0) return 0.0;
     const double Rs = std::sqrt(std::numbers::pi * f * kMu0 / sigma_copper);
     const double R_per_m = Rs / trace_width;
@@ -29,6 +34,8 @@ double total_alpha(double f, double trace_width, double Z0, double eps_eff,
                            kC0 * tan_delta;
     return alpha_c + alpha_d;
 }
+
+bool is_outer_copper(int ord) { return ord == 0 || ord == 31; }
 
 }  // namespace
 
@@ -46,11 +53,11 @@ sikit::touchstone::TouchstoneFile synthesize_channel(
             "synthesize_channel: impedance engine returned invalid Z₀ or v_phase");
     }
 
-    const double Z0 = imp.z0;
-    const double v  = imp.v_phase;
-    const double l  = spec.length_m;
-    const double Zr = reference_impedance;
+    const double Z0_dc = imp.z0;
+    const double Zr    = reference_impedance;
+    const double l     = spec.length_m;
     const double two_pi = 2.0 * std::numbers::pi;
+    const bool dispersive = spec.dispersion_model.has_value();
 
     sikit::touchstone::TouchstoneFile out;
     out.num_ports = 2;
@@ -61,17 +68,32 @@ sikit::touchstone::TouchstoneFile synthesize_channel(
     out.s_matrices.reserve(freq_hz.size());
 
     for (double f : freq_hz) {
-        // γ = α + jβ. Lossless v0 just had γ = jβ (α = 0); the loss
-        // model adds conductor + dielectric attenuation per metre.
-        const double alpha = total_alpha(f, spec.trace_width, Z0, imp.eps_eff,
-                                          spec.stackup.tan_delta,
-                                          spec.stackup.sigma_copper);
-        const double beta = two_pi * f / v;
+        // Pick eps_eff(f) and tan_δ(f) per the dispersion model if set,
+        // otherwise fall back to the constant-εr stackup data.
+        double eps_eff = imp.eps_eff;
+        double tan_d   = spec.stackup.tan_delta;
+        if (dispersive) {
+            const double eps_r_f = spec.dispersion_model->epsilon_r(f);
+            tan_d = spec.dispersion_model->tan_delta(f);
+            if (is_outer_copper(spec.layer_ordinal)) {
+                eps_eff = microstrip_eps_eff(
+                    spec.trace_width, spec.stackup.outer_dielectric_height,
+                    eps_r_f);
+            } else {
+                eps_eff = eps_r_f;  // stripline → fully embedded
+            }
+        }
+        const double v_phase = kC0 / std::sqrt(eps_eff);
+
+        const double alpha = per_freq_alpha(f, spec.trace_width, Z0_dc,
+                                             eps_eff, tan_d,
+                                             spec.stackup.sigma_copper);
+        const double beta = two_pi * f / v_phase;
         const Complex gamma(alpha, beta);
         const Complex gl = gamma * l;
         const Complex A = std::cosh(gl);
-        const Complex B = Z0 * std::sinh(gl);
-        const Complex C = std::sinh(gl) / Z0;
+        const Complex B = Z0_dc * std::sinh(gl);
+        const Complex C = std::sinh(gl) / Z0_dc;
         const Complex D = std::cosh(gl);
 
         const Complex denom = A + B / Zr + C * Zr + D;

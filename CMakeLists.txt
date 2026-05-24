@@ -42,6 +42,7 @@ add_library(sikit_core STATIC
     src/analysis/TraceImpedance.cpp
     src/analysis/ChannelSynthesis.cpp
     src/ibis/Ibis.cpp
+    src/dispersion/DjordjevicSarkar.cpp
     src/sparam/SParam.cpp
     src/eye/Eye.cpp
     src/eye/EyeMetrics.cpp
