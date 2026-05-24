@@ -20,6 +20,7 @@ add_executable(sikit_tests
     ibis_test.cpp
     sparam_test.cpp
     eye_test.cpp
+    eye_ramp_test.cpp
     eye_mask_test.cpp
     fft_test.cpp
     channel_test.cpp

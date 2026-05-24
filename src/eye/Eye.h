@@ -1,23 +1,16 @@
 // Eye-diagram math: TX waveform generation, simple channel models, and
 // UI-aligned folding into a 2D bin grid. Rendering (Qt overlay or popup
 // widget) is layered on top in a separate module.
-//
-// The eye is the canonical SI debug view: every UI-length window of the
-// received waveform stacked on top of itself reveals jitter, ringing,
-// and inter-symbol interference. The "eye opening" is what the protocol
-// spec mask compares against.
 
 #pragma once
 
 #include <cstddef>
 #include <vector>
 
+namespace sikit::ibis { struct Model; }
+
 namespace sikit::eye {
 
-// 2D histogram of waveform values folded into one UI (unit interval).
-//   counts[t + v*time_bins]   row-major over (volt, time)
-// v_min/v_max bracket the data range so an overlay shader can map them
-// to colormap intensity.
 struct EyeGrid {
     int time_bins = 0;
     int volt_bins = 0;
@@ -27,30 +20,33 @@ struct EyeGrid {
 
     int& at(int t_bin, int v_bin) { return counts[t_bin + v_bin * time_bins]; }
     int  at(int t_bin, int v_bin) const { return counts[t_bin + v_bin * time_bins]; }
-
-    // Maximum bin count — useful for normalizing intensity at render time.
     int max_count() const;
 };
 
 // Generate an NRZ TX waveform: each bit becomes `samples_per_ui` samples
-// at level +1 (logic 1) or -1 (logic 0). Total samples = bits.size() * spu.
+// at level +1 / −1 with step edges (infinite bandwidth).
 std::vector<double> nrz_waveform(const std::vector<int>& bits,
                                   int samples_per_ui);
 
-// Pseudo-random binary sequence (PRBS-7): length 127, polynomial x⁷+x⁶+1.
-// Returns `num_bits` bits (the sequence repeats every 127 bits).
+// Bandwidth-limited NRZ: transitions take `ramp_fraction · UI` samples
+// to slew between bit levels. ramp_fraction = 0 → identical to
+// nrz_waveform; ramp_fraction = 1.0 → fully ramped (sawtooth-ish). Real
+// IBIS drivers are typically 0.05 – 0.30.
+std::vector<double> nrz_with_ramp(const std::vector<int>& bits,
+                                   int samples_per_ui,
+                                   double ramp_fraction);
+
+// Given a baud rate (Hz) and an IBIS Model, return the ramp fraction
+// (rise/fall transition time as a fraction of the unit interval). Uses
+// the typ corner. Falls back to 0.0 if the model has no usable ramp.
+double ramp_fraction_from_ibis(const sikit::ibis::Model& m, double baud_hz);
+
 std::vector<int> prbs7(int num_bits);
 
-// First-order IIR RC low-pass filter.
-//   α = exp(-2π·fc·dt);  y[n] = α·y[n-1] + (1-α)·x[n]
-// `dt` is the sample period in seconds; `cutoff_hz` is the -3 dB corner.
 std::vector<double> rc_lowpass(const std::vector<double>& x,
                                 double dt,
                                 double cutoff_hz);
 
-// Fold `y` into UI-aligned bins. Use multiple-UI alignment by repeating
-// the window every `samples_per_ui` samples through the waveform. Optionally
-// skip the first `warmup_uis` UIs so initial transients don't pollute the eye.
 EyeGrid build_eye(const std::vector<double>& y,
                   int samples_per_ui,
                   int time_bins = 128,
