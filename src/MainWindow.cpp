@@ -9,6 +9,8 @@
 #include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QScrollArea>
+#include <QFrame>
 #include <QStatusBar>
 #include <spdlog/spdlog.h>
 
@@ -32,14 +34,21 @@
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle("sikit");
+    // Allow the window to shrink small; the layer dock wraps its panel in a
+    // QScrollArea so its sizeHint doesn't pin a floor on the window size.
+    setMinimumSize(480, 320);
     resize(1280, 800);
 
     canvas_ = new PcbCanvas(this);
     setCentralWidget(canvas_);
 
     layer_panel_ = new LayerPanel(this);
+    auto* layers_scroll = new QScrollArea(this);
+    layers_scroll->setWidget(layer_panel_);
+    layers_scroll->setWidgetResizable(true);
+    layers_scroll->setFrameShape(QFrame::NoFrame);
     auto* dock = new QDockWidget("Layers", this);
-    dock->setWidget(layer_panel_);
+    dock->setWidget(layers_scroll);
     dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
     addDockWidget(Qt::RightDockWidgetArea, dock);
     connect(layer_panel_, &LayerPanel::visibility_changed,
@@ -125,7 +134,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
             &MainWindow::onSynthesizeEye);
 
     hover_label_ = new QLabel(this);
-    hover_label_->setMinimumWidth(300);
+    hover_label_->setMinimumWidth(0);
     statusBar()->addPermanentWidget(hover_label_);
     connect(canvas_, &PcbCanvas::hoverInfo, hover_label_, &QLabel::setText);
 

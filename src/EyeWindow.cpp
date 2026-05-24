@@ -36,6 +36,9 @@ QColor viridis(double t) {
 
 EyeWindow::EyeWindow(QWidget* parent) : QWidget(parent) {
     setWindowTitle("Eye Diagram");
+    // Window may be freely resized; below this floor the axis labels and
+    // caption start clipping but the diagram itself still renders.
+    setMinimumSize(320, 240);
     resize(640, 480);
     setAttribute(Qt::WA_DeleteOnClose);
 }
