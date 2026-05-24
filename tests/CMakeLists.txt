@@ -11,6 +11,7 @@ add_executable(sikit_tests
     segment_mesher_test.cpp
     via_mesher_test.cpp
     hit_test.cpp
+    touchstone_test.cpp
 )
 
 target_link_libraries(sikit_tests PRIVATE
