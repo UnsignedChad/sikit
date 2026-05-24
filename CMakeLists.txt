@@ -44,6 +44,7 @@ add_library(sikit_core STATIC
     src/ibis/Ibis.cpp
     src/sparam/SParam.cpp
     src/eye/Eye.cpp
+    src/eye/EyeMetrics.cpp
     src/specs/EyeMask.cpp
     src/dsp/Fft.cpp
     src/dsp/ChannelResponse.cpp

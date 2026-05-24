@@ -7,6 +7,7 @@
 #include <QImage>
 #include <QPainter>
 #include <QPolygonF>
+#include "eye/EyeMetrics.h"
 
 namespace {
 
@@ -117,10 +118,14 @@ void EyeWindow::paintEvent(QPaintEvent*) {
     p.drawText(plot.left() - 36, plot.bottom(),
                QString::number(eye_.v_min, 'f', 2));
 
-    QString caption = QString("%1×%2 bins · peak=%3 · range=[%4, %5]")
+    const auto eye_metrics = sikit::eye::measure_eye(eye_);
+    QString caption = QString("H=%6 V  W=%7 UI  J=%8 UI  ·  range=[%4, %5]  ·  peak=%3  ·  %1×%2 bins")
                           .arg(eye_.time_bins).arg(eye_.volt_bins).arg(peak)
                           .arg(eye_.v_min, 0, 'f', 3)
-                          .arg(eye_.v_max, 0, 'f', 3);
+                          .arg(eye_.v_max, 0, 'f', 3)
+                          .arg(eye_metrics.height_v, 0, 'f', 3)
+                          .arg(eye_metrics.width_ui, 0, 'f', 3)
+                          .arg(eye_metrics.jitter_pp_ui, 0, 'f', 3);
     if (mask_) {
         const int v = sikit::specs::count_violations(eye_, *mask_);
         caption += QString("  ·  mask: %1  (%2 violations)")

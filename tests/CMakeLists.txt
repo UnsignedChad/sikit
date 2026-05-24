@@ -22,6 +22,7 @@ add_executable(sikit_tests
     sparam_test.cpp
     eye_test.cpp
     eye_ramp_test.cpp
+    eye_metrics_test.cpp
     eye_mask_test.cpp
     fft_test.cpp
     channel_test.cpp
