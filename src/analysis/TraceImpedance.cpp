@@ -7,6 +7,7 @@
 
 #include "em2d/CrossSection.h"
 #include "em2d/FdmSolver.h"
+#include "highspeed/DiffPair.h"
 #include "impedance/Impedance.h"
 
 namespace sikit::analysis {
@@ -314,6 +315,71 @@ std::vector<SegmentImpedance> compute_all(const model::Board& board,
         r.segment_index = i;
         r.net_id = seg.net_id;
         out.push_back(r);
+    }
+    return out;
+}
+
+double compute_diff_z0_closed_form(double trace_width, double spacing,
+                                    int layer_ordinal,
+                                    const AnalysisStackup& s) {
+    if (trace_width <= 0.0 || spacing < 0.0) return 0.0;
+    auto se = compute_one(trace_width, layer_ordinal, s);
+    if (se.z0 <= 0.0) return 0.0;
+    if (is_outer_copper(layer_ordinal)) {
+        return impedance::edge_coupled_microstrip_diff(
+            se.z0, spacing, s.outer_dielectric_height);
+    }
+    return impedance::edge_coupled_stripline_diff(
+        se.z0, spacing, s.inner_plane_separation);
+}
+
+namespace {
+
+double median(std::vector<double> v) {
+    if (v.empty()) return 0.0;
+    std::sort(v.begin(), v.end());
+    return v[v.size() / 2];
+}
+
+}  // namespace
+
+std::vector<DiffPairImpedance> compute_diff_pairs(
+    const model::Board& board, const AnalysisStackup& s, Engine engine) {
+
+    std::vector<DiffPairImpedance> out;
+    auto pairs = sikit::highspeed::find_diff_pairs(board);
+    for (const auto& dp : pairs) {
+        DiffPairImpedance r;
+        r.net_p_id = dp.net_p_id;
+        r.net_n_id = dp.net_n_id;
+        r.base_name = dp.base_name;
+
+        // Collect widths and segment indices on F.Cu for either net.
+        std::vector<double> widths;
+        for (std::size_t i = 0; i < board.segments.size(); ++i) {
+            const auto& seg = board.segments[i];
+            if (seg.net_id != dp.net_p_id && seg.net_id != dp.net_n_id) continue;
+            if (seg.layer_ordinal != 0) continue;  // F.Cu only for v0
+            if (seg.width > 0.0) widths.push_back(seg.width);
+            r.segment_indices.push_back(i);
+        }
+        if (widths.empty()) {
+            r.z_diff = 0.0;
+            out.push_back(std::move(r));
+            continue;
+        }
+        r.trace_width = median(widths);
+        r.spacing = r.trace_width;  // v0 default; future: routing-derived
+        r.layer_ordinal = 0;
+
+        if (engine == Engine::Fdm) {
+            r.z_diff = compute_diff_z0_fdm(r.trace_width, r.spacing,
+                                            r.layer_ordinal, s);
+        } else {
+            r.z_diff = compute_diff_z0_closed_form(r.trace_width, r.spacing,
+                                                    r.layer_ordinal, s);
+        }
+        out.push_back(std::move(r));
     }
     return out;
 }

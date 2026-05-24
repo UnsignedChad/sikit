@@ -209,6 +209,63 @@ TEST_CASE("engine: compute_all caches FDM results per (width, layer)", "[trace]"
     REQUIRE(rs[0].z0 > 0);
 }
 
+TEST_CASE("diff closed-form: edge-coupled microstrip Z_diff is in expected band",
+          "[trace]") {
+    AnalysisStackup s;
+    s.outer_dielectric_height = 1.0e-3;
+    s.copper_thickness = 35e-6;
+    s.epsilon_r = 4.4;
+    const double W = 1.5e-3;
+    const double S = 0.5e-3;
+    const double z = compute_diff_z0_closed_form(W, S, 0, s);
+    REQUIRE(z > 60.0);
+    REQUIRE(z < 130.0);
+
+    // Tighter spacing reduces Z_diff (more coupling).
+    const double z_tight = compute_diff_z0_closed_form(W, 0.1e-3, 0, s);
+    REQUIRE(z_tight < z);
+}
+
+TEST_CASE("compute_diff_pairs: finds pairs and computes Z_diff per pair", "[trace]") {
+    Board b;
+    b.stackup.layers.push_back({0, "F.Cu", "signal"});
+    b.nets.push_back({1, "USB_DP_P"});
+    b.nets.push_back({2, "USB_DP_N"});
+    b.nets.push_back({3, "GND"});
+
+    auto push_seg = [&](int net, double y, double w) {
+        Segment s;
+        s.start = {0, y};
+        s.end   = {10e-3, y};
+        s.width = w;
+        s.layer_ordinal = 0;
+        s.net_id = net;
+        b.segments.push_back(s);
+    };
+    push_seg(1, 0,        0.20e-3);
+    push_seg(1, 0,        0.20e-3);
+    push_seg(2, 0.30e-3,  0.20e-3);
+    push_seg(2, 0.30e-3,  0.20e-3);
+    push_seg(3, 1.0e-3,   0.30e-3);  // unrelated GND segment, should not match
+
+    AnalysisStackup s;
+    auto pairs = compute_diff_pairs(b, s, Engine::ClosedForm);
+    REQUIRE(pairs.size() == 1);
+    REQUIRE(pairs[0].base_name == "USB_DP");
+    REQUIRE(pairs[0].trace_width == 0.20e-3);
+    REQUIRE(pairs[0].spacing     == 0.20e-3);   // v0 default S = W
+    REQUIRE(pairs[0].z_diff      > 0);
+    REQUIRE(pairs[0].segment_indices.size() == 4);  // 2 + 2 segments
+}
+
+TEST_CASE("compute_diff_pairs: returns empty when no diff pairs exist", "[trace]") {
+    Board b;
+    b.stackup.layers.push_back({0, "F.Cu", "signal"});
+    b.nets.push_back({1, "VCC"});
+    auto p = compute_diff_pairs(b, {});
+    REQUIRE(p.empty());
+}
+
 TEST_CASE("from_board: stripline B = sum of dielectric above + below inner copper",
           "[trace]") {
     Board b;

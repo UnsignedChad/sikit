@@ -71,6 +71,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(z100, &QAction::triggered, this,
             [this]() { showImpedanceOverlay(100.0); });
     analyzeMenu->addSeparator();
+    auto* zd90 = analyzeMenu->addAction("Diff-pair impedance overlay (90 Ω, USB)");
+    zd90->setShortcut(QKeySequence("Ctrl+Shift+2"));
+    connect(zd90, &QAction::triggered, this,
+            [this]() { showDiffPairOverlay(90.0); });
+    auto* zd100 = analyzeMenu->addAction("Diff-pair impedance overlay (100 Ω, PCIe/HDMI)");
+    zd100->setShortcut(QKeySequence("Ctrl+Shift+3"));
+    connect(zd100, &QAction::triggered, this,
+            [this]() { showDiffPairOverlay(100.0); });
     auto* clearAct = analyzeMenu->addAction("&Clear overlay");
     clearAct->setShortcut(QKeySequence("Ctrl+0"));
     connect(clearAct, &QAction::triggered, canvas_, &PcbCanvas::clearImpedanceOverlay);
@@ -353,6 +361,64 @@ void MainWindow::onSynthesizeEye() {
     spdlog::info("synthesized eye W={:.3f}mm L={:.1f}mm Z0={:.1f}Ω "
                  "{} Gbps {} violations",
                  width_mm, length_mm, imp.z0, baud_gbps, violations);
+}
+
+void MainWindow::showDiffPairOverlay(double target_z_diff) {
+    if (!board_) {
+        QMessageBox::information(this, "Diff-pair overlay",
+                                 "Open a KiCad PCB first.");
+        return;
+    }
+    const auto stackup = sikit::analysis::AnalysisStackup::from_board(*board_);
+    const auto engine = use_fdm_action_ && use_fdm_action_->isChecked()
+                            ? sikit::analysis::Engine::Fdm
+                            : sikit::analysis::Engine::ClosedForm;
+    auto pairs = sikit::analysis::compute_diff_pairs(*board_, stackup, engine);
+
+    if (pairs.empty()) {
+        canvas_->clearImpedanceOverlay();
+        statusBar()->showMessage(
+            "No diff pairs detected (no nets with matching _P/_N / +/- suffixes)");
+        return;
+    }
+
+    // Flatten into per-segment results so we can reuse setImpedanceOverlay's
+    // colour-by-error renderer. Each segment of every pair gets the pair's
+    // Z_diff value as its "z0".
+    std::vector<sikit::analysis::SegmentImpedance> rs;
+    int on_spec = 0, warn = 0, fail = 0;
+    for (const auto& dp : pairs) {
+        const double err = (target_z_diff > 0.0 && dp.z_diff > 0.0)
+                               ? std::abs(dp.z_diff - target_z_diff) / target_z_diff
+                               : 1.0;
+        if (err < 0.05) ++on_spec;
+        else if (err < 0.10) ++warn;
+        else ++fail;
+        for (auto idx : dp.segment_indices) {
+            if (idx >= board_->segments.size()) continue;
+            const auto& seg = board_->segments[idx];
+            sikit::analysis::SegmentImpedance r;
+            r.segment_index = idx;
+            r.layer_ordinal = seg.layer_ordinal;
+            r.net_id = seg.net_id;
+            r.trace_width = seg.width;
+            r.z0 = dp.z_diff;
+            rs.push_back(r);
+        }
+    }
+    canvas_->setImpedanceOverlay(rs, target_z_diff);
+
+    const QString engine_name =
+        (engine == sikit::analysis::Engine::Fdm) ? "FDM" : "closed-form";
+    statusBar()->showMessage(
+        QString("Diff-pair Z @ %1 Ω · %2: %3 pairs (%4 on-spec, %5 warn, %6 fail)")
+            .arg(target_z_diff, 0, 'f', 0)
+            .arg(engine_name)
+            .arg(pairs.size())
+            .arg(on_spec).arg(warn).arg(fail));
+    spdlog::info("diff-pair overlay target={}Ω engine={} pairs={} on-spec={} warn={} fail={}",
+                 target_z_diff, engine_name.toStdString(), pairs.size(),
+                 on_spec, warn, fail);
 }
 
 void MainWindow::showEyeDiagramDemo(bool severe_isi) {

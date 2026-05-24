@@ -57,6 +57,37 @@ double compute_diff_z0_fdm(double trace_width,
                             int layer_ordinal,
                             const AnalysisStackup& s);
 
+// Closed-form differential impedance: single-ended Z₀ via Wadell, then
+// the standard edge-coupled correction (microstrip or stripline form
+// depending on layer).
+double compute_diff_z0_closed_form(double trace_width,
+                                    double spacing,
+                                    int layer_ordinal,
+                                    const AnalysisStackup& s);
+
+// Per-pair result for a detected diff pair on the board.
+struct DiffPairImpedance {
+    int net_p_id = -1;
+    int net_n_id = -1;
+    std::string base_name;       // shared stem from the pair detector
+    double trace_width = 0.0;    // representative (median of F.Cu segments)
+    double spacing = 0.0;        // edge-to-edge gap used in the calculation
+    int    layer_ordinal = 0;
+    double z_diff = 0.0;         // Ω
+    // Indices into board.segments belonging to either net of this pair.
+    std::vector<std::size_t> segment_indices;
+};
+
+// Detect diff pairs in `board` and compute differential impedance for
+// each. Representative width is the median F.Cu segment width on the
+// positive net; spacing defaults to that width (≈ 1:1 routing) since
+// the parser doesn't yet extract the actual routed gap. Engine selects
+// closed-form (fast) or FDM (slower, captures stackup nuances).
+std::vector<DiffPairImpedance> compute_diff_pairs(
+    const model::Board& board,
+    const AnalysisStackup& s,
+    Engine engine = Engine::ClosedForm);
+
 std::vector<SegmentImpedance> compute_all(const model::Board& board,
                                           const AnalysisStackup& s,
                                           Engine engine = Engine::ClosedForm);
