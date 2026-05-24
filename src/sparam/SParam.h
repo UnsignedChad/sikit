@@ -15,6 +15,8 @@
 
 #include "touchstone/Touchstone.h"
 
+#include <vector>
+
 namespace sikit::sparam {
 
 using Complex = std::complex<double>;
@@ -78,6 +80,35 @@ double insertion_loss_db(Complex s21);
 
 // Return loss in dB. Positive values = good match (low reflection).
 double return_loss_db(Complex s11);
+
+// ------------- Time-Domain Reflectometry / Transmission --------------
+//
+// Build a step-response impedance trace Z(t) from a single S_ii curve
+// (typically S11). This is the textbook IFFT-then-cumsum approach:
+//   * input spectrum is windowed (Hann) over the measured band
+//   * bins below the lowest measured frequency stay zero (we make no
+//     attempt to extrapolate to DC; the trace shape is correct but the
+//     absolute Z reading floats by a constant offset)
+//   * conjugate-symmetric two-sided spectrum -> IFFT -> impulse response
+//   * cumulative sum of the real part -> step response rho(t)
+//   * Z(t) = Zref * (1+rho) / (1-rho), clamped so |rho| < 0.99
+//
+// Frequencies must be on a uniform grid (df = freqs[1]-freqs[0]); the
+// helper picks an FFT size as the next power of 2 above 2*(k0+K) where
+// k0 = round(freqs[0]/df) is the DC offset of the band.
+struct TdrResult {
+    std::vector<double> time;    // seconds
+    std::vector<double> value;   // ohms (TDR) or dimensionless (TDT)
+};
+
+TdrResult tdr_step_response(const std::vector<double>& freqs,
+                             const std::vector<Complex>& s_ii,
+                             double z_ref = 50.0);
+
+// Same FFT skeleton, but for transmission (S21 etc.). Returns the
+// step response in [0,1] amplitude rather than impedance.
+TdrResult tdt_step_response(const std::vector<double>& freqs,
+                             const std::vector<Complex>& s_ij);
 
 struct SParamError : std::runtime_error {
     using std::runtime_error::runtime_error;

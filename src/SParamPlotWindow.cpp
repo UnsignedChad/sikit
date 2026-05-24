@@ -104,6 +104,8 @@ SParamPlotWindow::SParamPlotWindow(QWidget* parent) : QWidget(parent) {
     mode_combo_->addItem("Magnitude (dB)");
     mode_combo_->addItem("Phase (deg, unwrapped)");
     mode_combo_->addItem("Group delay (ns)");
+    mode_combo_->addItem("TDR — impedance (Ω) vs time");
+    mode_combo_->addItem("TDT — step response vs time");
     connect(mode_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &SParamPlotWindow::onModeChanged);
     top->addWidget(mode_combo_);
@@ -206,6 +208,10 @@ void SParamPlotWindow::rebuildCurveCheckboxes() {
 }
 
 void SParamPlotWindow::paintPlotInto(QWidget* target) {
+    if (mode_ == YMode::TdrImpedance || mode_ == YMode::TdtAmplitude) {
+        paintTimeDomainInto(target);
+        return;
+    }
     QPainter p(target);
     p.fillRect(target->rect(), QColor(20, 20, 26));
     if (ts_.num_ports <= 0 || ts_.frequencies.empty()) {
@@ -379,9 +385,11 @@ void SParamPlotWindow::paintPlotInto(QWidget* target) {
     }
     QString y_title;
     switch (mode_) {
-        case YMode::MagnitudeDb:  y_title = "|S| (dB)"; break;
-        case YMode::PhaseDeg:     y_title = "phase (deg)"; break;
-        case YMode::GroupDelayNs: y_title = "τg (ns)"; break;
+        case YMode::MagnitudeDb:   y_title = "|S| (dB)"; break;
+        case YMode::PhaseDeg:      y_title = "phase (deg)"; break;
+        case YMode::GroupDelayNs:  y_title = "τg (ns)"; break;
+        case YMode::TdrImpedance:  y_title = "Z (Ω)"; break;
+        case YMode::TdtAmplitude:  y_title = "step"; break;
     }
     // Rotated y-axis title.
     p.save();
@@ -451,4 +459,177 @@ void SParamPlotWindow::applyMixedModeIfRequested() {
     } catch (...) {
         ts_ = ts_se_;  // give up silently; checkbox stays checked but unused
     }
+}
+
+// ---------- Time-domain plot (Tier 1.3) ---------------------------------
+
+void SParamPlotWindow::paintTimeDomainInto(QWidget* target) {
+    QPainter p(target);
+    p.fillRect(target->rect(), QColor(20, 20, 26));
+    if (ts_.num_ports <= 0 || ts_.frequencies.size() < 2) {
+        p.setPen(Qt::white);
+        p.drawText(target->rect(), Qt::AlignCenter, "Need at least two freq points for time-domain view");
+        return;
+    }
+
+    const int N = ts_.num_ports;
+    const QRect plot(kPlotMarginL, kPlotMarginT,
+                     target->width()  - kPlotMarginL - kPlotMarginR,
+                     target->height() - kPlotMarginT - kPlotMarginB);
+    if (plot.width() < 20 || plot.height() < 20) return;
+
+    // Compute curves for every checked S_ij. In TDR mode we skip off-
+    // diagonals (no meaningful Z-impedance from S21). In TDT mode we
+    // skip the diagonals.
+    struct Curve {
+        int idx;
+        std::vector<double> t;     // seconds
+        std::vector<double> y;     // ohms or amplitude
+        QString label;
+    };
+    std::vector<Curve> curves;
+    const std::size_t K = ts_.frequencies.size();
+    for (std::size_t i = 0; i < curve_checks_.size(); ++i) {
+        if (!curve_checks_[i] || !curve_checks_[i]->isChecked()) continue;
+        const int r = static_cast<int>(i) / N;
+        const int c = static_cast<int>(i) % N;
+        const bool diag = (r == c);
+        if (mode_ == YMode::TdrImpedance && !diag) continue;
+        if (mode_ == YMode::TdtAmplitude &&  diag) continue;
+
+        std::vector<sikit::sparam::Complex> sij(K);
+        for (std::size_t k = 0; k < K; ++k) {
+            sij[k] = ts_.s_matrices[k][r + c * N];
+        }
+        sikit::sparam::TdrResult tr;
+        if (mode_ == YMode::TdrImpedance) {
+            tr = sikit::sparam::tdr_step_response(
+                ts_.frequencies, sij, ts_.reference_impedance);
+        } else {
+            tr = sikit::sparam::tdt_step_response(ts_.frequencies, sij);
+        }
+        if (tr.time.empty()) continue;
+
+        Curve cv;
+        cv.idx = static_cast<int>(i);
+        cv.t   = std::move(tr.time);
+        cv.y   = std::move(tr.value);
+        cv.label = curve_checks_[i]->text();
+        curves.push_back(std::move(cv));
+    }
+
+    // X-axis: linear time, in nanoseconds. Cap the max time to where the
+    // step response has settled — first ~10 ns is what people look at for
+    // SI; let the auto-range stretch if the trace is long.
+    double t_max = 0.0;
+    for (const auto& cv : curves) {
+        if (!cv.t.empty()) t_max = std::max(t_max, cv.t.back());
+    }
+    if (t_max <= 0.0) t_max = 1e-9;
+    // Display from 0 to t_max, rounded up to a tidy ns value.
+    const double t_max_ns = t_max * 1e9;
+    auto x_of = [&](double t_sec) {
+        const double t_ns = t_sec * 1e9;
+        const double tt = t_ns / t_max_ns;
+        return plot.left() + tt * plot.width();
+    };
+
+    // Y-axis: auto-range.
+    double y_min = +1e300, y_max = -1e300;
+    for (const auto& cv : curves) {
+        for (double v : cv.y) {
+            if (!std::isfinite(v)) continue;
+            y_min = std::min(y_min, v);
+            y_max = std::max(y_max, v);
+        }
+    }
+    if (curves.empty() || !std::isfinite(y_min) || y_min == y_max) {
+        if (mode_ == YMode::TdrImpedance) { y_min = 30; y_max = 80; }
+        else                               { y_min = -0.1; y_max = 1.1; }
+    } else {
+        const double pad = 0.08 * (y_max - y_min);
+        y_min -= pad;
+        y_max += pad;
+    }
+    auto y_of = [&](double v) {
+        v = std::clamp(v, y_min, y_max);
+        const double t = (v - y_min) / (y_max - y_min);
+        return plot.bottom() - t * plot.height();
+    };
+
+    // Grid + axes.
+    p.setPen(QColor(50, 50, 60));
+    for (int i = 0; i <= 5; ++i) {
+        const double y = plot.top() + plot.height() * (i / 5.0);
+        p.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y));
+    }
+    for (int i = 0; i <= 10; ++i) {
+        const double x = plot.left() + plot.width() * (i / 10.0);
+        p.setPen(i == 0 || i == 10 || i == 5 ? QColor(70, 70, 80) : QColor(40, 40, 50));
+        p.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()));
+    }
+    p.setPen(QColor(140, 140, 150));
+    p.drawRect(plot);
+
+    // X labels — divide t_max_ns into ~10 ticks.
+    p.setPen(QColor(200, 200, 210));
+    for (int i = 0; i <= 10; ++i) {
+        const double tn = t_max_ns * (i / 10.0);
+        const double x = plot.left() + plot.width() * (i / 10.0);
+        p.drawText(QRectF(x - 30, plot.bottom() + 4, 60, 18),
+                   Qt::AlignHCenter | Qt::AlignTop,
+                   QString::number(tn, 'f', 2));
+    }
+    p.drawText(QRectF(plot.left(), plot.bottom() + 20, plot.width(), 16),
+               Qt::AlignHCenter, "time (ns)");
+
+    // Y labels.
+    for (int i = 0; i <= 5; ++i) {
+        const double v = y_max - (y_max - y_min) * (i / 5.0);
+        const double y = plot.top() + plot.height() * (i / 5.0);
+        QString lbl = QString::number(v, 'f', (mode_ == YMode::TdtAmplitude) ? 2 : 1);
+        p.drawText(QRectF(2, y - 8, kPlotMarginL - 6, 16),
+                   Qt::AlignRight | Qt::AlignVCenter, lbl);
+    }
+    // Y-axis title rotated.
+    p.save();
+    p.translate(14, plot.center().y());
+    p.rotate(-90);
+    p.drawText(QRectF(-80, -8, 160, 16), Qt::AlignHCenter,
+               (mode_ == YMode::TdrImpedance) ? "Z (Ω)" : "step");
+    p.restore();
+
+    // Curves.
+    for (const auto& cv : curves) {
+        QPen pen(curve_color(cv.idx));
+        pen.setWidthF(1.6);
+        p.setPen(pen);
+        QPolygonF poly;
+        poly.reserve(static_cast<int>(cv.y.size()));
+        for (std::size_t i = 0; i < cv.y.size(); ++i) {
+            if (!std::isfinite(cv.y[i])) continue;
+            if (cv.t[i] > t_max) break;
+            poly << QPointF(x_of(cv.t[i]), y_of(cv.y[i]));
+        }
+        if (poly.size() >= 2) p.drawPolyline(poly);
+    }
+
+    // Caption.
+    QString cap = QString("%1-port, %2 freq pts → IFFT step response, "
+                          "t ∈ [0, %3 ns]")
+                      .arg(N)
+                      .arg(ts_.frequencies.size())
+                      .arg(t_max_ns, 0, 'f', 1);
+    if (mode_ == YMode::TdrImpedance) {
+        cap += QString("    Z ∈ [%1, %2] Ω  (ref Z₀=%3Ω)")
+                   .arg(y_min, 0, 'f', 1)
+                   .arg(y_max, 0, 'f', 1)
+                   .arg(ts_.reference_impedance, 0, 'f', 1);
+        cap += "    note: absolute level may float by a DC offset (no DC point in measured band)";
+    } else {
+        cap += QString("    step ∈ [%1, %2]")
+                   .arg(y_min, 0, 'f', 3)
+                   .arg(y_max, 0, 'f', 3);
+    }
+    caption_->setText(cap);
 }

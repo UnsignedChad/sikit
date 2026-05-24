@@ -1,5 +1,8 @@
 #include "sparam/SParam.h"
 
+#include <algorithm>
+#include "dsp/Fft.h"
+
 #include <cmath>
 #include <format>
 
@@ -194,6 +197,96 @@ double return_loss_db(Complex s11) {
     const double mag = std::abs(s11);
     if (mag <= 0.0) return std::numeric_limits<double>::infinity();
     return -20.0 * std::log10(mag);
+}
+
+
+// --------------------------- TDR / TDT (Tier 1.3) -----------------------
+
+namespace {
+
+constexpr double kTdrPi = 3.14159265358979323846;
+
+// Shared FFT/cumsum kernel. Returns the cumulative-sum step response of the
+// real impulse response, plus the time vector. Empty result on bad input.
+struct StepBundle {
+    std::vector<double> time;
+    std::vector<double> step;  // dimensionless cumulative sum of impulse
+};
+
+StepBundle build_step(const std::vector<double>& freqs,
+                      const std::vector<Complex>& s) {
+    StepBundle out;
+    if (freqs.size() < 2 || freqs.size() != s.size()) return out;
+
+    const double df = freqs[1] - freqs[0];
+    if (df <= 0.0) return out;
+    const int K  = static_cast<int>(freqs.size());
+    const int k0 = static_cast<int>(std::round(freqs[0] / df));
+    if (k0 < 0) return out;
+    const int n_pos = k0 + K;
+
+    // FFT size: next power of 2 >= 2 * n_pos. Need at least 64 bins so the
+    // time grid resolution is usable.
+    std::size_t N = 64;
+    while (N < static_cast<std::size_t>(2 * n_pos)) N *= 2;
+
+    std::vector<Complex> H(N, Complex(0, 0));
+
+    // Place data into positive bins with a Hann window so the band edge
+    // doesn't ring like crazy after IFFT.
+    for (int i = 0; i < K; ++i) {
+        const double w = (K > 1) ? 0.5 - 0.5 * std::cos(2.0 * kTdrPi * i / (K - 1)) : 1.0;
+        H[k0 + i] = s[i] * w;
+    }
+    // Hermitian symmetry for k = 1 .. N/2-1. The bins below k0 stay at
+    // zero -- we make no attempt to extrapolate to DC; the trace shape is
+    // correct but absolute level may float.
+    for (std::size_t k = 1; k < N / 2; ++k) {
+        H[N - k] = std::conj(H[k]);
+    }
+
+    // Inverse FFT -> impulse response (real-valued up to round-off).
+    sikit::dsp::fft(H, /*inverse=*/true);
+
+    const double dt = 1.0 / (static_cast<double>(N) * df);
+    const std::size_t M = N / 2;
+
+    out.time.resize(M);
+    out.step.resize(M);
+    double accum = 0.0;
+    for (std::size_t i = 0; i < M; ++i) {
+        accum += H[i].real();
+        out.time[i] = static_cast<double>(i) * dt;
+        out.step[i] = accum;
+    }
+    return out;
+}
+
+}  // namespace
+
+TdrResult tdr_step_response(const std::vector<double>& freqs,
+                             const std::vector<Complex>& s_ii,
+                             double z_ref) {
+    auto b = build_step(freqs, s_ii);
+    TdrResult r;
+    r.time  = std::move(b.time);
+    r.value.resize(r.time.size());
+    for (std::size_t i = 0; i < r.value.size(); ++i) {
+        // Convert reflection coefficient rho to impedance via the
+        // textbook formula. Clamp rho to keep the result finite.
+        double rho = std::clamp(b.step[i], -0.99, 0.99);
+        r.value[i] = z_ref * (1.0 + rho) / (1.0 - rho);
+    }
+    return r;
+}
+
+TdrResult tdt_step_response(const std::vector<double>& freqs,
+                             const std::vector<Complex>& s_ij) {
+    auto b = build_step(freqs, s_ij);
+    TdrResult r;
+    r.time  = std::move(b.time);
+    r.value = std::move(b.step);
+    return r;
 }
 
 }  // namespace sikit::sparam

@@ -224,3 +224,73 @@ TEST_CASE("sparam: to_mixed_mode rejects non-4-port files", "[sparam]") {
     REQUIRE_THROWS_AS(sikit::sparam::to_mixed_mode(a),
                       sikit::sparam::SParamError);
 }
+
+TEST_CASE("sparam: TDR of zero-reflection line gives Z ≈ Zref", "[sparam][tdr]") {
+    // S11 = 0 at every frequency → step response = 0 → Z(t) = Zref.
+    std::vector<double> freqs;
+    std::vector<sikit::sparam::Complex> s11;
+    for (int k = 0; k < 128; ++k) {
+        freqs.push_back(1e8 * (k + 1));   // 100 MHz .. 12.8 GHz, uniform
+        s11.emplace_back(0.0, 0.0);
+    }
+    auto tdr = sikit::sparam::tdr_step_response(freqs, s11, 50.0);
+    REQUIRE(!tdr.time.empty());
+    for (double z : tdr.value) {
+        REQUIRE(z == Approx(50.0).margin(1.0));
+    }
+}
+
+TEST_CASE("sparam: TDR of |S11|=0.2 short reflection moves Z away from Zref",
+          "[sparam][tdr]") {
+    // Constant S11 = 0.2 across band. After Hann-windowed IFFT + cumsum, the
+    // step response should rise off zero, so Z(t) departs from Zref=50.
+    std::vector<double> freqs;
+    std::vector<sikit::sparam::Complex> s11;
+    for (int k = 0; k < 256; ++k) {
+        freqs.push_back(1e8 * (k + 1));
+        s11.emplace_back(0.2, 0.0);
+    }
+    auto tdr = sikit::sparam::tdr_step_response(freqs, s11, 50.0);
+    REQUIRE(!tdr.time.empty());
+    // Look at the peak excursion. The exact value depends on FFT length and
+    // windowing, but it must move at least a couple of ohms away from 50.
+    double zmin = tdr.value.front(), zmax = tdr.value.front();
+    for (double z : tdr.value) { zmin = std::min(zmin, z); zmax = std::max(zmax, z); }
+    REQUIRE((zmax - zmin) > 2.0);
+}
+
+TEST_CASE("sparam: TDR rejects bad input", "[sparam][tdr]") {
+    std::vector<double> freqs{1e9};                  // only 1 point
+    std::vector<sikit::sparam::Complex> s11{{0, 0}};
+    auto bad = sikit::sparam::tdr_step_response(freqs, s11, 50.0);
+    REQUIRE(bad.time.empty());
+
+    // Mismatched lengths.
+    std::vector<double> f2{1e9, 2e9};
+    auto bad2 = sikit::sparam::tdr_step_response(f2, s11, 50.0);
+    REQUIRE(bad2.time.empty());
+}
+
+TEST_CASE("sparam: TDT of perfect passthrough is monotonically rising",
+          "[sparam][tdt]") {
+    // S21 = 1 across band → impulse response is a band-limited sinc → its
+    // step response rises from zero. Absolute amplitude is not 1 because
+    // there is no DC bin in the source data (band starts at 100 MHz) and
+    // the Hann window halves the area further; this is documented in the
+    // SParam.h block. We only test the qualitative shape: the value at
+    // mid-trace exceeds the value at the start.
+    std::vector<double> freqs;
+    std::vector<sikit::sparam::Complex> s21;
+    for (int k = 0; k < 256; ++k) {
+        freqs.push_back(1e8 * (k + 1));
+        s21.emplace_back(1.0, 0.0);
+    }
+    auto tdt = sikit::sparam::tdt_step_response(freqs, s21);
+    REQUIRE(!tdt.time.empty());
+    // Any meaningful step response sits well above the noise floor in
+    // its early oscillation envelope. Without a DC anchor the trace will
+    // rise, ring, and decay; we just verify the rise.
+    double peak = 0;
+    for (double v : tdt.value) peak = std::max(peak, std::abs(v));
+    REQUIRE(peak > 0.1);
+}

@@ -29,6 +29,8 @@ public:
         MagnitudeDb,
         PhaseDeg,
         GroupDelayNs,
+        TdrImpedance,   // time-domain reflectometry (diagonals only)
+        TdtAmplitude,   // time-domain transmission step (off-diagonals only)
     };
 
     explicit SParamPlotWindow(QWidget* parent = nullptr);
@@ -47,6 +49,8 @@ public:
     // Public so the in-cpp PlotCanvas helper (anonymous namespace) can
     // reach it without needing a matching forward declaration.
     void paintPlotInto(QWidget* target);
+    // Internal: time-domain branch (TDR/TDT modes).
+    void paintTimeDomainInto(QWidget* target);
 
 private slots:
     void onModeChanged(int idx);
