@@ -17,6 +17,7 @@ add_executable(sikit_tests
     stackup_test.cpp
     trace_impedance_test.cpp
     channel_synthesis_test.cpp
+    ibis_test.cpp
     sparam_test.cpp
     eye_test.cpp
     eye_mask_test.cpp

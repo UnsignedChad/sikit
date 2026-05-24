@@ -40,6 +40,7 @@ add_library(sikit_core STATIC
     src/highspeed/DiffPair.cpp
     src/analysis/TraceImpedance.cpp
     src/analysis/ChannelSynthesis.cpp
+    src/ibis/Ibis.cpp
     src/sparam/SParam.cpp
     src/eye/Eye.cpp
     src/specs/EyeMask.cpp
