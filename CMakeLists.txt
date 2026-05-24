@@ -44,6 +44,8 @@ add_library(sikit_core STATIC
     src/specs/EyeMask.cpp
     src/dsp/Fft.cpp
     src/dsp/ChannelResponse.cpp
+    src/em2d/CrossSection.cpp
+    src/em2d/FdmSolver.cpp
 )
 target_include_directories(sikit_core PUBLIC src)
 target_include_directories(sikit_core PUBLIC third_party)
