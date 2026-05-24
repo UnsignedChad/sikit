@@ -1,6 +1,7 @@
 #include "PcbCanvas.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -14,7 +15,6 @@
 
 namespace {
 
-// Flat-color shader: position only, single color uniform.
 constexpr auto kFlatVertSrc = R"(
 #version 330 core
 layout(location = 0) in vec2 a_pos;
@@ -33,9 +33,27 @@ void main() {
 }
 )";
 
-// Painter-order priority: bigger = drawn later (on top). KiCad puts F.Cu (0)
-// physically on top of the board; we draw inner copper first, then B.Cu, then
-// F.Cu so the top layer wins.
+constexpr auto kVcolVertSrc = R"(
+#version 330 core
+layout(location = 0) in vec2 a_pos;
+layout(location = 1) in vec4 a_color;
+out vec4 v_color;
+uniform mat4 u_proj;
+void main() {
+    gl_Position = u_proj * vec4(a_pos, 0.0, 1.0);
+    v_color = a_color;
+}
+)";
+
+constexpr auto kVcolFragSrc = R"(
+#version 330 core
+in vec4 v_color;
+out vec4 frag_color;
+void main() {
+    frag_color = v_color;
+}
+)";
+
 int render_priority(int ord) {
     if (ord == 0) return 1000;
     if (ord == 31) return 500;
@@ -57,6 +75,7 @@ void PcbCanvas::setBoard(const sikit::model::Board* board) {
     board_ = board;
     pending_meshes_.clear();
     layer_visible_.clear();
+    clearImpedanceOverlay();
 
     if (board_) {
         pending_meshes_ = sikit::render::build_all_meshes(*board_);
@@ -101,6 +120,75 @@ void PcbCanvas::fitToBoard() {
     }
 }
 
+void PcbCanvas::clearImpedanceOverlay() {
+    pending_overlay_verts_.clear();
+    pending_overlay_indices_.clear();
+    overlay_dirty_ = true;
+    update();
+}
+
+void PcbCanvas::setImpedanceOverlay(
+    const std::vector<sikit::analysis::SegmentImpedance>& results,
+    double target_z0) {
+
+    pending_overlay_verts_.clear();
+    pending_overlay_indices_.clear();
+
+    if (!board_ || results.empty()) {
+        overlay_dirty_ = true;
+        update();
+        return;
+    }
+
+    // Each segment → rectangle quad (4 vertices, 6 indices), inflated slightly
+    // beyond the trace width so it visibly outlines the original trace fill.
+    constexpr double kInflateFactor = 1.6;
+    const double inflate = kInflateFactor;
+
+    for (const auto& r : results) {
+        if (r.segment_index >= board_->segments.size()) continue;
+        const auto& s = board_->segments[r.segment_index];
+
+        const double dx = s.end.x - s.start.x;
+        const double dy = s.end.y - s.start.y;
+        const double len = std::sqrt(dx * dx + dy * dy);
+        if (len <= 0.0 || s.width <= 0.0) continue;
+
+        const double nx = -dy / len;
+        const double ny =  dx / len;
+        const double hw = 0.5 * s.width * inflate;
+
+        const float ax1 = static_cast<float>(s.start.x + nx * hw);
+        const float ay1 = static_cast<float>(s.start.y + ny * hw);
+        const float ax2 = static_cast<float>(s.start.x - nx * hw);
+        const float ay2 = static_cast<float>(s.start.y - ny * hw);
+        const float bx1 = static_cast<float>(s.end.x   - nx * hw);
+        const float by1 = static_cast<float>(s.end.y   - ny * hw);
+        const float bx2 = static_cast<float>(s.end.x   + nx * hw);
+        const float by2 = static_cast<float>(s.end.y   + ny * hw);
+
+        const auto c = sikit::analysis::color_for_error(r.z0, target_z0);
+
+        const auto base = static_cast<std::uint32_t>(pending_overlay_verts_.size() / 6);
+        // 4 vertices, each (x, y, r, g, b, a).
+        auto push = [&](float x, float y) {
+            pending_overlay_verts_.insert(pending_overlay_verts_.end(),
+                                          {x, y, c.r, c.g, c.b, c.a});
+        };
+        push(ax1, ay1);
+        push(ax2, ay2);
+        push(bx1, by1);
+        push(bx2, by2);
+
+        pending_overlay_indices_.insert(pending_overlay_indices_.end(),
+            {base + 0, base + 1, base + 2,
+             base + 0, base + 2, base + 3});
+    }
+
+    overlay_dirty_ = true;
+    update();
+}
+
 void PcbCanvas::initializeGL() {
     initializeOpenGLFunctions();
     glClearColor(0.10f, 0.10f, 0.12f, 1.0f);
@@ -110,6 +198,10 @@ void PcbCanvas::initializeGL() {
     flat_prog_.addShaderFromSourceCode(QOpenGLShader::Vertex,   kFlatVertSrc);
     flat_prog_.addShaderFromSourceCode(QOpenGLShader::Fragment, kFlatFragSrc);
     flat_prog_.link();
+
+    vcol_prog_.addShaderFromSourceCode(QOpenGLShader::Vertex,   kVcolVertSrc);
+    vcol_prog_.addShaderFromSourceCode(QOpenGLShader::Fragment, kVcolFragSrc);
+    vcol_prog_.link();
 
     grid_vao_.create();
     grid_vbo_.create();
@@ -126,6 +218,22 @@ void PcbCanvas::initializeGL() {
     board_vao_.release();
     board_vbo_.release();
     board_ibo_.release();
+
+    overlay_vao_.create();
+    overlay_vbo_.create();
+    overlay_ibo_.create();
+    overlay_vao_.bind();
+    overlay_vbo_.bind();
+    overlay_ibo_.bind();
+    // Stride = 6 floats: (x, y, r, g, b, a).
+    vcol_prog_.enableAttributeArray(0);
+    vcol_prog_.setAttributeBuffer(0, GL_FLOAT, 0, 2, 6 * sizeof(float));
+    vcol_prog_.enableAttributeArray(1);
+    vcol_prog_.setAttributeBuffer(1, GL_FLOAT, 2 * sizeof(float), 4,
+                                   6 * sizeof(float));
+    overlay_vao_.release();
+    overlay_vbo_.release();
+    overlay_ibo_.release();
 }
 
 void PcbCanvas::buildGrid() {
@@ -191,12 +299,37 @@ void PcbCanvas::uploadBoardMeshes() {
     meshes_dirty_ = false;
 }
 
+void PcbCanvas::uploadOverlay() {
+    overlay_index_count_ = static_cast<int>(pending_overlay_indices_.size());
+
+    overlay_vao_.bind();
+    overlay_vbo_.bind();
+    overlay_vbo_.allocate(pending_overlay_verts_.data(),
+                          static_cast<int>(pending_overlay_verts_.size() *
+                                           sizeof(float)));
+    overlay_ibo_.bind();
+    overlay_ibo_.allocate(pending_overlay_indices_.data(),
+                          static_cast<int>(pending_overlay_indices_.size() *
+                                           sizeof(std::uint32_t)));
+    vcol_prog_.enableAttributeArray(0);
+    vcol_prog_.setAttributeBuffer(0, GL_FLOAT, 0, 2, 6 * sizeof(float));
+    vcol_prog_.enableAttributeArray(1);
+    vcol_prog_.setAttributeBuffer(1, GL_FLOAT, 2 * sizeof(float), 4,
+                                   6 * sizeof(float));
+    overlay_vao_.release();
+    overlay_vbo_.release();
+    overlay_ibo_.release();
+
+    overlay_dirty_ = false;
+}
+
 void PcbCanvas::resizeGL(int w, int h) {
     glViewport(0, 0, w, h);
 }
 
 void PcbCanvas::paintGL() {
     if (meshes_dirty_) uploadBoardMeshes();
+    if (overlay_dirty_) uploadOverlay();
 
     glClear(GL_COLOR_BUFFER_BIT);
 
@@ -231,6 +364,16 @@ void PcbCanvas::paintGL() {
         board_vao_.release();
     }
     flat_prog_.release();
+
+    // Impedance-error overlay, drawn last (on top of the board fills).
+    if (overlay_index_count_ > 0) {
+        vcol_prog_.bind();
+        vcol_prog_.setUniformValue("u_proj", proj);
+        overlay_vao_.bind();
+        glDrawElements(GL_TRIANGLES, overlay_index_count_, GL_UNSIGNED_INT, nullptr);
+        overlay_vao_.release();
+        vcol_prog_.release();
+    }
 }
 
 void PcbCanvas::mousePressEvent(QMouseEvent* e) {

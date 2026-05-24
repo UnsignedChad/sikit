@@ -13,6 +13,7 @@
 
 #include "LayerPanel.h"
 #include "PcbCanvas.h"
+#include "analysis/TraceImpedance.h"
 #include "parser/KicadPcbParser.h"
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
@@ -22,7 +23,6 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     canvas_ = new PcbCanvas(this);
     setCentralWidget(canvas_);
 
-    // Layer-visibility dock panel on the right.
     layer_panel_ = new LayerPanel(this);
     auto* dock = new QDockWidget("Layers", this);
     dock->setWidget(layer_panel_);
@@ -44,7 +44,24 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(fitAct, &QAction::triggered, canvas_, &PcbCanvas::fitToBoard);
     viewMenu->addAction(dock->toggleViewAction());
 
-    // Permanent label on the right of the status bar for hover info.
+    auto* analyzeMenu = menuBar()->addMenu("&Analyze");
+    auto* z50 = analyzeMenu->addAction("Trace impedance overlay (50 Ω)");
+    z50->setShortcut(QKeySequence("Ctrl+1"));
+    connect(z50, &QAction::triggered, this,
+            [this]() { showImpedanceOverlay(50.0); });
+    auto* z90 = analyzeMenu->addAction("Trace impedance overlay (90 Ω, USB-style)");
+    z90->setShortcut(QKeySequence("Ctrl+2"));
+    connect(z90, &QAction::triggered, this,
+            [this]() { showImpedanceOverlay(90.0); });
+    auto* z100 = analyzeMenu->addAction("Trace impedance overlay (100 Ω, PCIe/HDMI-style)");
+    z100->setShortcut(QKeySequence("Ctrl+3"));
+    connect(z100, &QAction::triggered, this,
+            [this]() { showImpedanceOverlay(100.0); });
+    analyzeMenu->addSeparator();
+    auto* clearAct = analyzeMenu->addAction("&Clear overlay");
+    clearAct->setShortcut(QKeySequence("Ctrl+0"));
+    connect(clearAct, &QAction::triggered, canvas_, &PcbCanvas::clearImpedanceOverlay);
+
     hover_label_ = new QLabel(this);
     hover_label_->setMinimumWidth(300);
     statusBar()->addPermanentWidget(hover_label_);
@@ -59,6 +76,32 @@ void MainWindow::onOpenKicadPcb() {
         "KiCad PCB (*.kicad_pcb);;All files (*)");
     if (path.isEmpty()) return;
     loadKicadPcb(path);
+}
+
+void MainWindow::showImpedanceOverlay(double target_z0) {
+    if (!board_) {
+        QMessageBox::information(this, "Impedance overlay",
+                                 "Open a KiCad PCB first.");
+        return;
+    }
+    sikit::analysis::AnalysisStackup stackup;  // defaults: 4-layer FR-4 prepreg
+    auto results = sikit::analysis::compute_all(*board_, stackup);
+    canvas_->setImpedanceOverlay(results, target_z0);
+
+    // Quick on-spec tally for the status bar.
+    int on_spec = 0, warn = 0, fail = 0;
+    for (const auto& r : results) {
+        const double err = std::abs(r.z0 - target_z0) / target_z0;
+        if (err < 0.05) ++on_spec;
+        else if (err < 0.10) ++warn;
+        else ++fail;
+    }
+    statusBar()->showMessage(
+        QString("Impedance overlay @ %1 Ω: %2 on-spec (<5%), %3 warn (<10%), %4 fail (≥10%)")
+            .arg(target_z0, 0, 'f', 0)
+            .arg(on_spec).arg(warn).arg(fail));
+    spdlog::info("impedance overlay target={}Ω: on-spec={} warn={} fail={}",
+                 target_z0, on_spec, warn, fail);
 }
 
 void MainWindow::populateLayerPanel() {

@@ -10,6 +10,7 @@
 #include <QOpenGLWidget>
 #include <QPoint>
 
+#include "analysis/TraceImpedance.h"
 #include "model/Board.h"
 #include "render/Camera2D.h"
 #include "render/SegmentMesher.h"
@@ -22,6 +23,12 @@ public:
     void setBoard(const sikit::model::Board* board);
     void setLayerVisibility(int ordinal, bool visible);
     void fitToBoard();
+
+    // Build and upload a colored impedance-error overlay over the board's
+    // segments. Pass an empty results vector to clear.
+    void setImpedanceOverlay(const std::vector<sikit::analysis::SegmentImpedance>& results,
+                              double target_z0);
+    void clearImpedanceOverlay();
 
 signals:
     void hoverInfo(const QString& info);
@@ -39,6 +46,7 @@ protected:
 private:
     void buildGrid();
     void uploadBoardMeshes();
+    void uploadOverlay();
 
     struct LayerRange {
         int ordinal = 0;
@@ -49,9 +57,10 @@ private:
     sikit::render::Camera2D camera_;
     const sikit::model::Board* board_ = nullptr;
 
-    // Flat-color shader: grid + per-layer board fills. Future SI overlays
-    // (impedance color, eye diagram) will add their own programs.
+    // Flat-color shader: grid + per-layer board fills.
     QOpenGLShaderProgram flat_prog_;
+    // Per-vertex color shader: impedance overlay (and any future scalar overlay).
+    QOpenGLShaderProgram vcol_prog_;
 
     QOpenGLBuffer grid_vbo_{QOpenGLBuffer::VertexBuffer};
     QOpenGLVertexArrayObject grid_vao_;
@@ -63,6 +72,17 @@ private:
     std::vector<LayerRange> layer_ranges_;
     std::vector<sikit::render::LayerMesh> pending_meshes_;
     bool meshes_dirty_ = false;
+
+    // Impedance overlay: 6 floats per vertex (x, y, r, g, b, a), 2 triangles
+    // per segment. Stored at vertex level so a single draw call colors every
+    // segment by its own deviation from target Z0.
+    QOpenGLBuffer overlay_vbo_{QOpenGLBuffer::VertexBuffer};
+    QOpenGLBuffer overlay_ibo_{QOpenGLBuffer::IndexBuffer};
+    QOpenGLVertexArrayObject overlay_vao_;
+    std::vector<float> pending_overlay_verts_;
+    std::vector<std::uint32_t> pending_overlay_indices_;
+    int overlay_index_count_ = 0;
+    bool overlay_dirty_ = false;
 
     std::unordered_map<int, bool> layer_visible_;
 

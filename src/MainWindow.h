@@ -14,8 +14,6 @@ class MainWindow : public QMainWindow {
 public:
     explicit MainWindow(QWidget* parent = nullptr);
 
-    // Load a KiCad .kicad_pcb file. Shows a message box on error.
-    // Returns true on success.
     bool loadKicadPcb(const QString& path);
 
 private slots:
@@ -23,6 +21,7 @@ private slots:
 
 private:
     void populateLayerPanel();
+    void showImpedanceOverlay(double target_z0);
 
     PcbCanvas* canvas_;
     LayerPanel* layer_panel_;
