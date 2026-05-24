@@ -22,6 +22,7 @@ private slots:
     void onOpenTouchstoneEye();
     void onSynthesizeEye();
     void onExportNetTouchstone();
+    void onExportNetCsv();
 
 private:
     void populateLayerPanel();

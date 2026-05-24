@@ -25,6 +25,7 @@
 #include "parser/KicadPcbParser.h"
 #include "specs/EyeMask.h"
 #include "touchstone/Touchstone.h"
+#include "touchstone/TouchstoneCsv.h"
 #include "touchstone/TouchstoneWriter.h"
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
@@ -53,6 +54,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     auto* exportTs = fileMenu->addAction("Export &net as Touchstone .s2p...");
     exportTs->setShortcut(QKeySequence("Ctrl+Shift+S"));
     connect(exportTs, &QAction::triggered, this, &MainWindow::onExportNetTouchstone);
+    auto* exportCsv = fileMenu->addAction("Export net frequency sweep &CSV...");
+    exportCsv->setShortcut(QKeySequence("Ctrl+Shift+C"));
+    connect(exportCsv, &QAction::triggered, this, &MainWindow::onExportNetCsv);
     fileMenu->addSeparator();
     fileMenu->addAction("E&xit", this, &QWidget::close);
 
@@ -320,6 +324,92 @@ void MainWindow::onExportNetTouchstone() {
     spdlog::info("exported {} to {} (W={:.3f}mm L={:.1f}mm)",
                  choice.toStdString(), path.toStdString(),
                  trace_width * 1e3, total_length * 1e3);
+}
+
+void MainWindow::onExportNetCsv() {
+    if (!board_) {
+        QMessageBox::information(this, "Export net CSV",
+                                 "Open a KiCad PCB first.");
+        return;
+    }
+    auto hs_ids = sikit::highspeed::find_high_speed_nets(*board_);
+    if (hs_ids.empty()) {
+        QMessageBox::information(this, "Export net CSV",
+                                 "No high-speed nets detected on this board.");
+        return;
+    }
+
+    QStringList items;
+    for (int nid : hs_ids) {
+        if (const auto* n = board_->find_net(nid)) {
+            items << QString::fromStdString(n->name);
+        }
+    }
+    bool ok = false;
+    const QString choice = QInputDialog::getItem(
+        this, "Export net CSV", "Net to export:", items, 0, false, &ok);
+    if (!ok) return;
+
+    int target_net = -1;
+    if (const auto* n = board_->find_net_by_name(choice.toStdString())) {
+        target_net = n->id;
+    }
+    if (target_net < 0) return;
+
+    std::vector<double> widths;
+    double total_length = 0.0;
+    for (const auto& s : board_->segments) {
+        if (s.net_id != target_net) continue;
+        if (s.layer_ordinal != 0) continue;
+        widths.push_back(s.width);
+        const double dx = s.end.x - s.start.x;
+        const double dy = s.end.y - s.start.y;
+        total_length += std::sqrt(dx * dx + dy * dy);
+    }
+    if (widths.empty() || total_length <= 0.0) {
+        QMessageBox::warning(this, "Export net CSV",
+                              "Net has no F.Cu segments to model.");
+        return;
+    }
+    std::sort(widths.begin(), widths.end());
+    const double trace_width = widths[widths.size() / 2];
+
+    const QString path = QFileDialog::getSaveFileName(
+        this, "Save frequency-sweep CSV", QString("%1.csv").arg(choice),
+        "CSV (*.csv)");
+    if (path.isEmpty()) return;
+
+    sikit::analysis::ChannelSpec spec;
+    spec.trace_width = trace_width;
+    spec.layer_ordinal = 0;
+    spec.length_m = total_length;
+    spec.stackup = sikit::analysis::AnalysisStackup::from_board(*board_);
+    spec.engine = sikit::analysis::Engine::ClosedForm;
+
+    std::vector<double> freqs;
+    freqs.reserve(200);
+    const double f_lo = 10e6, f_hi = 20e9;
+    for (int i = 0; i < 200; ++i) {
+        const double t = static_cast<double>(i) / 199.0;
+        freqs.push_back(f_lo + t * (f_hi - f_lo));
+    }
+
+    try {
+        auto ts = sikit::analysis::synthesize_channel(spec, freqs, 50.0);
+        sikit::touchstone::TouchstoneCsv::write_file(ts, path.toStdString());
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Export failed", e.what());
+        return;
+    }
+
+    statusBar()->showMessage(
+        QString("Exported %1 frequency sweep → %2 (200 pts, W=%3mm, L=%4mm)")
+            .arg(choice)
+            .arg(QFileInfo(path).fileName())
+            .arg(trace_width * 1e3, 0, 'f', 3)
+            .arg(total_length * 1e3, 0, 'f', 1));
+    spdlog::info("exported {} CSV to {}",
+                 choice.toStdString(), path.toStdString());
 }
 
 void MainWindow::onSynthesizeEye() {
