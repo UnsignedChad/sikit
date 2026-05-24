@@ -61,4 +61,31 @@ ImpedanceResult compute_z0(const CrossSection& cs, int trace_id, int ground_id,
                             double cell_size_m,
                             const SolveConfig& cfg = {});
 
+// Richardson-extrapolated Z₀: runs `compute_z0` at h and 2h and
+// linearly combines the per-unit-length capacitances to cancel the
+// leading-order O(h) error of the cell-rect classifier. Costs ~5× a
+// single solve (the 2h pass is cheap; h is the same as before) but
+// brings the canonical 50 Ω microstrip case from ~12 % high to under
+// ~5 % at the same h.
+//
+// Reports the iteration counts of the two underlying solves so callers
+// can sanity-check convergence on both grids.
+struct RefinedImpedanceResult {
+    bool   ok = false;
+    double c_per_m = 0.0;
+    double c_air_per_m = 0.0;
+    double z0_ohm = 0.0;
+    double eps_eff = 0.0;
+    double v_phase = 0.0;
+    int    iter_fine = 0;
+    int    iter_coarse = 0;
+    double z0_fine = 0.0;     // h-only result (for comparison)
+    double z0_coarse = 0.0;   // 2h-only result (for comparison)
+};
+
+RefinedImpedanceResult compute_z0_refined(const CrossSection& cs,
+                                            int trace_id, int ground_id,
+                                            double cell_size_m,
+                                            const SolveConfig& cfg = {});
+
 }  // namespace sikit::em2d

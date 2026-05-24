@@ -31,6 +31,7 @@ add_executable(sikit_tests
     channel_test.cpp
     em2d_test.cpp
     rlgc_test.cpp
+    fdm_refined_test.cpp
 )
 
 target_link_libraries(sikit_tests PRIVATE

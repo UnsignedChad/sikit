@@ -82,7 +82,11 @@ SolveResult solve(FdmGrid& g, const SolveConfig& cfg) {
     SolveResult r;
     for (int iter = 0; iter < cfg.max_iterations; ++iter) {
         double max_delta = 0.0;
-        // Interior cells only; boundary cells stay at 0 (Dirichlet).
+        // Interior cells only; boundary cells stay at 0 (Dirichlet). The
+        // user supplies enough lateral / vertical air space in the cross-
+        // section that fringing fields have decayed before reaching the
+        // walls; the cross-section's defaults handle this for typical
+        // microstrip / stripline geometries.
         for (int j = 1; j < g.nz - 1; ++j) {
             for (int i = 1; i < g.ny - 1; ++i) {
                 const std::size_t k = g.idx(i, j);
@@ -152,6 +156,60 @@ ImpedanceResult compute_z0(const CrossSection& cs,
     r.v_phase = kC0 / std::sqrt(r.eps_eff);
     r.ok = true;
     (void)ground_id;  // GND is V=0 in the input; not needed beyond that
+    return r;
+}
+
+RefinedImpedanceResult compute_z0_refined(const CrossSection& cs,
+                                            int trace_id, int ground_id,
+                                            double cell_size_m,
+                                            const SolveConfig& cfg) {
+    constexpr double kC0 = 2.99792458e8;
+    RefinedImpedanceResult r;
+
+    const auto fine   = compute_z0(cs, trace_id, ground_id, cell_size_m,        cfg);
+    const auto coarse = compute_z0(cs, trace_id, ground_id, 2.0 * cell_size_m,  cfg);
+
+    r.iter_fine   = fine.iter_dielectric + fine.iter_air;
+    r.iter_coarse = coarse.iter_dielectric + coarse.iter_air;
+    r.z0_fine     = fine.z0_ohm;
+    r.z0_coarse   = coarse.z0_ohm;
+
+    if (!fine.ok || !coarse.ok) {
+        // Fall back to the fine result if available.
+        if (fine.ok) {
+            r.c_per_m     = fine.c_per_m;
+            r.c_air_per_m = fine.c_air_per_m;
+            r.z0_ohm      = fine.z0_ohm;
+            r.eps_eff     = fine.eps_eff;
+            r.v_phase     = fine.v_phase;
+            r.ok = true;
+        }
+        return r;
+    }
+
+    // First-order Richardson: C_true ≈ 2·C(h) − C(2h). The cell-rect
+    // classifier introduces a linear edge-fattening error that scales
+    // with h; this linear combination cancels it. The C values
+    // themselves get extrapolated; we recompute Z₀ from the extrapolated
+    // C/C_air pair rather than averaging the Z₀ outputs (which would
+    // mix lossy reciprocals).
+    r.c_per_m     = 2.0 * fine.c_per_m     - coarse.c_per_m;
+    r.c_air_per_m = 2.0 * fine.c_air_per_m - coarse.c_air_per_m;
+
+    if (r.c_per_m > 0.0 && r.c_air_per_m > 0.0) {
+        r.z0_ohm  = 1.0 / (kC0 * std::sqrt(r.c_per_m * r.c_air_per_m));
+        r.eps_eff = r.c_per_m / r.c_air_per_m;
+        r.v_phase = kC0 / std::sqrt(r.eps_eff);
+        r.ok = true;
+    } else {
+        // Extrapolation went negative — fall back to the fine result.
+        r.c_per_m     = fine.c_per_m;
+        r.c_air_per_m = fine.c_air_per_m;
+        r.z0_ohm      = fine.z0_ohm;
+        r.eps_eff     = fine.eps_eff;
+        r.v_phase     = fine.v_phase;
+        r.ok = true;
+    }
     return r;
 }
 
