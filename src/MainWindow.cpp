@@ -15,6 +15,7 @@
 #include "EyeWindow.h"
 #include "LayerPanel.h"
 #include "PcbCanvas.h"
+#include "analysis/ChannelSynthesis.h"
 #include "analysis/TraceImpedance.h"
 #include "dsp/ChannelResponse.h"
 #include "eye/Eye.h"
@@ -83,6 +84,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     eyeISI->setShortcut(QKeySequence("Ctrl+Shift+E"));
     connect(eyeISI, &QAction::triggered, this,
             [this]() { showEyeDiagramDemo(/*severe_isi=*/true); });
+    auto* eyeSynth = analyzeMenu->addAction("Eye diagram — &synthesized from trace geometry...");
+    eyeSynth->setShortcut(QKeySequence("Ctrl+Y"));
+    connect(eyeSynth, &QAction::triggered, this,
+            &MainWindow::onSynthesizeEye);
 
     hover_label_ = new QLabel(this);
     hover_label_->setMinimumWidth(300);
@@ -207,6 +212,90 @@ void MainWindow::showImpedanceOverlay(double target_z0) {
                  stackup.from_real_stackup ? "real" : "default",
                  stackup.epsilon_r,
                  on_spec, warn, fail);
+}
+
+void MainWindow::onSynthesizeEye() {
+    bool ok = false;
+    const double width_mm = QInputDialog::getDouble(
+        this, "Synthesize eye", "Trace width (mm):",
+        0.20, 0.05, 5.0, 3, &ok);
+    if (!ok) return;
+    const double length_mm = QInputDialog::getDouble(
+        this, "Synthesize eye", "Trace length (mm):",
+        50.0, 1.0, 1000.0, 1, &ok);
+    if (!ok) return;
+    const double baud_gbps = QInputDialog::getDouble(
+        this, "Synthesize eye", "Bit rate (Gbps):",
+        1.0, 0.01, 100.0, 2, &ok);
+    if (!ok) return;
+
+    // Use the loaded board's stackup if available, else generic FR-4.
+    sikit::analysis::AnalysisStackup stackup =
+        board_ ? sikit::analysis::AnalysisStackup::from_board(*board_)
+               : sikit::analysis::AnalysisStackup{};
+
+    sikit::analysis::ChannelSpec spec;
+    spec.trace_width = width_mm * 1e-3;
+    spec.layer_ordinal = 0;            // F.Cu microstrip by default
+    spec.length_m = length_mm * 1e-3;
+    spec.stackup = stackup;
+    spec.engine = sikit::analysis::Engine::ClosedForm;
+
+    // Frequency grid wide enough to cover the TX signal's spectrum.
+    // PRBS-7 NRZ at B Gbps has significant content up to ~5B.
+    constexpr int kBitCount = 2000;
+    constexpr int kSpu = 32;
+    const double baud = baud_gbps * 1e9;
+    const double fs = baud * kSpu;
+    std::vector<double> freqs;
+    const double f_step = baud / 50.0;
+    const double f_max = fs / 2.0;       // up to Nyquist of the TX waveform
+    for (double f = f_step; f <= f_max; f += f_step) freqs.push_back(f);
+
+    sikit::touchstone::TouchstoneFile channel;
+    try {
+        channel = sikit::analysis::synthesize_channel(spec, freqs, 50.0);
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Synthesize eye failed", e.what());
+        return;
+    }
+
+    auto bits = sikit::eye::prbs7(kBitCount);
+    auto tx = sikit::eye::nrz_waveform(bits, kSpu);
+    std::vector<double> rx;
+    try {
+        rx = sikit::dsp::apply_channel(tx, fs, channel);
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Apply synthesized channel failed", e.what());
+        return;
+    }
+    auto eye = sikit::eye::build_eye(rx, kSpu, 128, 96, /*warmup=*/8);
+    const auto& mask = sikit::specs::usb20_hs_template1();
+
+    // Pull Z0 / v_phase for the caption.
+    auto imp = sikit::analysis::compute_one(spec.trace_width, spec.layer_ordinal,
+                                             spec.stackup);
+
+    auto* w = new EyeWindow(this);
+    w->setAttribute(Qt::WA_DeleteOnClose);
+    w->setTitleSubtext(
+        QString("W=%1mm  L=%2mm  Z₀=%3Ω  %4 Gbps")
+            .arg(width_mm, 0, 'f', 3).arg(length_mm, 0, 'f', 1)
+            .arg(imp.z0, 0, 'f', 1).arg(baud_gbps, 0, 'f', 2));
+    w->setEye(eye);
+    w->setMask(&mask);
+    w->show();
+
+    const int violations = sikit::specs::count_violations(eye, mask);
+    statusBar()->showMessage(
+        QString("Synthesized eye: %1mm × %2mm trace · Z₀=%3Ω · %4 Gbps · violations=%5 %6")
+            .arg(width_mm, 0, 'f', 3).arg(length_mm, 0, 'f', 1)
+            .arg(imp.z0, 0, 'f', 1).arg(baud_gbps, 0, 'f', 2)
+            .arg(violations)
+            .arg(violations == 0 ? "PASS" : "FAIL"));
+    spdlog::info("synthesized eye W={:.3f}mm L={:.1f}mm Z0={:.1f}Ω "
+                 "{} Gbps {} violations",
+                 width_mm, length_mm, imp.z0, baud_gbps, violations);
 }
 
 void MainWindow::showEyeDiagramDemo(bool severe_isi) {

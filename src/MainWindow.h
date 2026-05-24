@@ -20,6 +20,7 @@ public:
 private slots:
     void onOpenKicadPcb();
     void onOpenTouchstoneEye();
+    void onSynthesizeEye();
 
 private:
     void populateLayerPanel();
