@@ -12,6 +12,7 @@ add_executable(sikit_tests
     via_mesher_test.cpp
     hit_test.cpp
     touchstone_test.cpp
+    touchstone_writer_test.cpp
     impedance_test.cpp
     diff_pair_test.cpp
     stackup_test.cpp

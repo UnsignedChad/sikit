@@ -36,6 +36,7 @@ add_library(sikit_core STATIC
     src/render/SegmentMesher.cpp
     src/render/ViaMesher.cpp
     src/touchstone/Touchstone.cpp
+    src/touchstone/TouchstoneWriter.cpp
     src/impedance/Impedance.cpp
     src/highspeed/DiffPair.cpp
     src/analysis/TraceImpedance.cpp

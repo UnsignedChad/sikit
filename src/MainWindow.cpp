@@ -25,6 +25,7 @@
 #include "parser/KicadPcbParser.h"
 #include "specs/EyeMask.h"
 #include "touchstone/Touchstone.h"
+#include "touchstone/TouchstoneWriter.h"
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle("sikit");
@@ -48,6 +49,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     auto* openTs = fileMenu->addAction("Open &Touchstone for eye...");
     openTs->setShortcut(QKeySequence("Ctrl+T"));
     connect(openTs, &QAction::triggered, this, &MainWindow::onOpenTouchstoneEye);
+    fileMenu->addSeparator();
+    auto* exportTs = fileMenu->addAction("Export &net as Touchstone .s2p...");
+    exportTs->setShortcut(QKeySequence("Ctrl+Shift+S"));
+    connect(exportTs, &QAction::triggered, this, &MainWindow::onExportNetTouchstone);
     fileMenu->addSeparator();
     fileMenu->addAction("E&xit", this, &QWidget::close);
 
@@ -223,6 +228,98 @@ void MainWindow::showImpedanceOverlay(double target_z0) {
                  stackup.from_real_stackup ? "real" : "default",
                  stackup.epsilon_r,
                  on_spec, warn, fail);
+}
+
+void MainWindow::onExportNetTouchstone() {
+    if (!board_) {
+        QMessageBox::information(this, "Export net Touchstone",
+                                 "Open a KiCad PCB first.");
+        return;
+    }
+    auto hs_ids = sikit::highspeed::find_high_speed_nets(*board_);
+    if (hs_ids.empty()) {
+        QMessageBox::information(this, "Export net Touchstone",
+                                 "No high-speed nets detected on this board "
+                                 "(no diff-pair suffixes or protocol keywords).");
+        return;
+    }
+
+    QStringList items;
+    for (int nid : hs_ids) {
+        if (const auto* n = board_->find_net(nid)) {
+            items << QString::fromStdString(n->name);
+        }
+    }
+    bool ok = false;
+    const QString choice = QInputDialog::getItem(
+        this, "Export net Touchstone", "Net to export:", items, 0, false, &ok);
+    if (!ok) return;
+
+    int target_net = -1;
+    if (const auto* n = board_->find_net_by_name(choice.toStdString())) {
+        target_net = n->id;
+    }
+    if (target_net < 0) return;
+
+    std::vector<double> widths;
+    double total_length = 0.0;
+    for (const auto& s : board_->segments) {
+        if (s.net_id != target_net) continue;
+        if (s.layer_ordinal != 0) continue;
+        widths.push_back(s.width);
+        const double dx = s.end.x - s.start.x;
+        const double dy = s.end.y - s.start.y;
+        total_length += std::sqrt(dx * dx + dy * dy);
+    }
+    if (widths.empty() || total_length <= 0.0) {
+        QMessageBox::warning(this, "Export net Touchstone",
+                              "Net has no F.Cu segments to model.");
+        return;
+    }
+    std::sort(widths.begin(), widths.end());
+    const double trace_width = widths[widths.size() / 2];
+
+    const QString path = QFileDialog::getSaveFileName(
+        this, "Save Touchstone", QString("%1.s2p").arg(choice),
+        "Touchstone 2-port (*.s2p)");
+    if (path.isEmpty()) return;
+
+    sikit::analysis::ChannelSpec spec;
+    spec.trace_width = trace_width;
+    spec.layer_ordinal = 0;
+    spec.length_m = total_length;
+    spec.stackup = sikit::analysis::AnalysisStackup::from_board(*board_);
+    spec.engine = sikit::analysis::Engine::ClosedForm;
+
+    // Standard 200-point linear sweep from 10 MHz to 20 GHz — wide enough
+    // to cover any protocol up to USB4 / PCIe Gen6 fundamentals.
+    std::vector<double> freqs;
+    freqs.reserve(200);
+    const double f_lo = 10e6, f_hi = 20e9;
+    for (int i = 0; i < 200; ++i) {
+        const double t = static_cast<double>(i) / 199.0;
+        freqs.push_back(f_lo + t * (f_hi - f_lo));
+    }
+
+    sikit::touchstone::TouchstoneFile ts;
+    try {
+        ts = sikit::analysis::synthesize_channel(spec, freqs, 50.0);
+        sikit::touchstone::TouchstoneWriter::write_file(ts, path.toStdString());
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Export failed", e.what());
+        return;
+    }
+
+    statusBar()->showMessage(
+        QString("Exported %1 → %2 (%3 pts, W=%4mm, L=%5mm)")
+            .arg(choice)
+            .arg(QFileInfo(path).fileName())
+            .arg(freqs.size())
+            .arg(trace_width * 1e3, 0, 'f', 3)
+            .arg(total_length * 1e3, 0, 'f', 1));
+    spdlog::info("exported {} to {} (W={:.3f}mm L={:.1f}mm)",
+                 choice.toStdString(), path.toStdString(),
+                 trace_width * 1e3, total_length * 1e3);
 }
 
 void MainWindow::onSynthesizeEye() {

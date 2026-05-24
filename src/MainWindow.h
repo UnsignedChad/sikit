@@ -21,6 +21,7 @@ private slots:
     void onOpenKicadPcb();
     void onOpenTouchstoneEye();
     void onSynthesizeEye();
+    void onExportNetTouchstone();
 
 private:
     void populateLayerPanel();
