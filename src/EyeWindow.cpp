@@ -6,11 +6,10 @@
 #include <QColor>
 #include <QImage>
 #include <QPainter>
+#include <QPolygonF>
 
 namespace {
 
-// Same viridis stops as the heat-map shader: visually distinguishable
-// at small bin counts, smooth gradient, perceptually uniform.
 QColor viridis(double t) {
     t = std::clamp(t, 0.0, 1.0);
     constexpr struct { double r, g, b; } stops[5] = {
@@ -26,10 +25,10 @@ QColor viridis(double t) {
     const double f = seg - i;
     const auto a = stops[i];
     const auto b = stops[i + 1];
-    const double r = a.r + f * (b.r - a.r);
-    const double g = a.g + f * (b.g - a.g);
-    const double bl = a.b + f * (b.b - a.b);
-    return QColor::fromRgbF(r, g, bl, 1.0);
+    return QColor::fromRgbF(a.r + f * (b.r - a.r),
+                            a.g + f * (b.g - a.g),
+                            a.b + f * (b.b - a.b),
+                            1.0);
 }
 
 }  // namespace
@@ -42,6 +41,11 @@ EyeWindow::EyeWindow(QWidget* parent) : QWidget(parent) {
 
 void EyeWindow::setEye(const sikit::eye::EyeGrid& grid) {
     eye_ = grid;
+    update();
+}
+
+void EyeWindow::setMask(const sikit::specs::EyeMask* mask) {
+    mask_ = mask;
     update();
 }
 
@@ -60,21 +64,15 @@ void EyeWindow::paintEvent(QPaintEvent*) {
         return;
     }
 
-    // Render the bin grid into a QImage at native bin resolution, then
-    // scale to fit the plot area. Crisp colors per bin; scaling is
-    // nearest-neighbor so individual bins remain visible.
     QImage img(eye_.time_bins, eye_.volt_bins, QImage::Format_RGB32);
     const int peak = std::max(1, eye_.max_count());
     for (int v = 0; v < eye_.volt_bins; ++v) {
         for (int t = 0; t < eye_.time_bins; ++t) {
             const int c = eye_.at(t, v);
-            // Flip Y so larger voltage is up on screen.
             const int img_y = eye_.volt_bins - 1 - v;
             if (c == 0) {
                 img.setPixelColor(t, img_y, QColor(20, 20, 26));
             } else {
-                // Log-stretch the intensity so sparse traces are visible
-                // without the dense baseline washing everything out.
                 const double t01 = std::log1p(c) / std::log1p(peak);
                 img.setPixelColor(t, img_y, viridis(t01));
             }
@@ -86,26 +84,49 @@ void EyeWindow::paintEvent(QPaintEvent*) {
                      width() - 2 * margin, height() - margin - margin / 2);
     p.drawImage(plot, img);
 
-    // Axes + frame.
+    // Mask overlay (in normalized (t, v) ∈ ([0,1], [-1,1]) → plot coords).
+    if (mask_ && !mask_->polygon.empty()) {
+        // Map normalized v ∈ [-1, 1] → plot Y. Use the data range as the half-span.
+        QPolygonF qpoly;
+        for (const auto& [tn, vn] : mask_->polygon) {
+            const double x = plot.left() + tn * plot.width();
+            // Normalized v=+1 → top of plot; v=-1 → bottom.
+            const double y = plot.center().y() - vn * (plot.height() / 2.0);
+            qpoly << QPointF(x, y);
+        }
+        const int violations = sikit::specs::count_violations(eye_, *mask_);
+        const QColor edge = (violations == 0)
+                                ? QColor(80, 220, 90, 220)
+                                : QColor(230, 70, 60, 220);
+        QPen pen(edge);
+        pen.setWidth(2);
+        p.setPen(pen);
+        p.setBrush(QColor(edge.red(), edge.green(), edge.blue(), 35));
+        p.drawPolygon(qpoly);
+    }
+
     p.setPen(QColor(140, 140, 150));
     p.drawRect(plot);
 
-    // X axis label: one unit interval.
     p.setPen(Qt::white);
     p.drawText(plot.left(), plot.bottom() + 18, "0");
     p.drawText(plot.right() - 24, plot.bottom() + 18, "1 UI");
     p.drawText(plot.center().x() - 4, plot.bottom() + 18, "½");
-
-    // Y axis labels: v_min and v_max from the data range.
     p.drawText(plot.left() - 36, plot.top() + 10,
                QString::number(eye_.v_max, 'f', 2));
     p.drawText(plot.left() - 36, plot.bottom(),
                QString::number(eye_.v_min, 'f', 2));
 
-    // Caption above the plot.
-    p.drawText(plot.left(), plot.top() - 6,
-               QString("%1×%2 bins · peak=%3 samples · range=[%4, %5]")
-                   .arg(eye_.time_bins).arg(eye_.volt_bins).arg(peak)
-                   .arg(eye_.v_min, 0, 'f', 3)
-                   .arg(eye_.v_max, 0, 'f', 3));
+    QString caption = QString("%1×%2 bins · peak=%3 · range=[%4, %5]")
+                          .arg(eye_.time_bins).arg(eye_.volt_bins).arg(peak)
+                          .arg(eye_.v_min, 0, 'f', 3)
+                          .arg(eye_.v_max, 0, 'f', 3);
+    if (mask_) {
+        const int v = sikit::specs::count_violations(eye_, *mask_);
+        caption += QString("  ·  mask: %1  (%2 violations)")
+                       .arg(QString::fromStdString(mask_->name))
+                       .arg(v);
+        caption += (v == 0) ? "  ✓ PASS" : "  ✗ FAIL";
+    }
+    p.drawText(plot.left(), plot.top() - 6, caption);
 }

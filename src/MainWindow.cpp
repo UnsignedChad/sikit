@@ -17,6 +17,7 @@
 #include "analysis/TraceImpedance.h"
 #include "eye/Eye.h"
 #include "parser/KicadPcbParser.h"
+#include "specs/EyeMask.h"
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle("sikit");
@@ -115,10 +116,6 @@ void MainWindow::showImpedanceOverlay(double target_z0) {
 }
 
 void MainWindow::showEyeDiagram(bool severe_isi) {
-    // Build a synthetic eye until Touchstone S21 → time-domain integration
-    // lands. 1 Gbps virtual baud, PRBS-7, 32 samples per UI, RC channel.
-    // - severe_isi=false: cutoff = 2·baud  → clean eye
-    // - severe_isi=true:  cutoff = baud/3  → ISI clearly closes the eye
     constexpr int kBitCount = 2000;
     constexpr int kSpu = 32;
     constexpr double kBaud = 1.0e9;
@@ -130,6 +127,8 @@ void MainWindow::showEyeDiagram(bool severe_isi) {
     auto rx = sikit::eye::rc_lowpass(tx, dt, fc);
     auto eye = sikit::eye::build_eye(rx, kSpu, 128, 96, /*warmup=*/8);
 
+    const auto& mask = sikit::specs::usb20_hs_template1();
+
     auto* w = new EyeWindow(this);
     w->setAttribute(Qt::WA_DeleteOnClose);
     w->setTitleSubtext(
@@ -138,11 +137,16 @@ void MainWindow::showEyeDiagram(bool severe_isi) {
             .arg(fc / 1e6, 0, 'f', 0)
             .arg(severe_isi ? "MHz (heavy ISI)" : "MHz (clean)"));
     w->setEye(eye);
+    w->setMask(&mask);
     w->show();
 
+    const int violations = sikit::specs::count_violations(eye, mask);
     statusBar()->showMessage(
-        QString("Eye built: %1 bits, %2 samples/UI, channel fc=%3 MHz")
-            .arg(kBitCount).arg(kSpu).arg(fc / 1e6, 0, 'f', 0));
+        QString("Eye: %1 bits, %2 samples/UI, fc=%3 MHz · mask=%4 · violations=%5 %6")
+            .arg(kBitCount).arg(kSpu).arg(fc / 1e6, 0, 'f', 0)
+            .arg(QString::fromStdString(mask.name))
+            .arg(violations)
+            .arg(violations == 0 ? "PASS" : "FAIL"));
 }
 
 void MainWindow::populateLayerPanel() {
