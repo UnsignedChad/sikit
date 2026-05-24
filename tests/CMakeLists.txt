@@ -32,6 +32,7 @@ add_executable(sikit_tests
     eye_test.cpp
     eye_ramp_test.cpp
     eye_metrics_test.cpp
+    bathtub_test.cpp
     reference_data_test.cpp
     eye_mask_test.cpp
     fft_test.cpp
