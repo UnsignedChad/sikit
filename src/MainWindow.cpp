@@ -12,6 +12,8 @@
 #include <QStatusBar>
 #include <spdlog/spdlog.h>
 
+#include <cmath>
+
 #include "EyeWindow.h"
 #include "LayerPanel.h"
 #include "PcbCanvas.h"
@@ -19,6 +21,7 @@
 #include "analysis/TraceImpedance.h"
 #include "dsp/ChannelResponse.h"
 #include "eye/Eye.h"
+#include "highspeed/DiffPair.h"
 #include "parser/KicadPcbParser.h"
 #include "specs/EyeMask.h"
 #include "touchstone/Touchstone.h"
@@ -216,13 +219,63 @@ void MainWindow::showImpedanceOverlay(double target_z0) {
 
 void MainWindow::onSynthesizeEye() {
     bool ok = false;
-    const double width_mm = QInputDialog::getDouble(
+    double width_mm = 0.20;
+    double length_mm = 50.0;
+    QString net_label;  // for the title bar
+
+    // If a board is loaded, offer to pre-fill from a high-speed net.
+    if (board_) {
+        auto hs_ids = sikit::highspeed::find_high_speed_nets(*board_);
+        if (!hs_ids.empty()) {
+            QStringList items;
+            items << "(enter width/length manually)";
+            for (int nid : hs_ids) {
+                if (const auto* n = board_->find_net(nid)) {
+                    items << QString::fromStdString(n->name);
+                }
+            }
+            const QString choice = QInputDialog::getItem(
+                this, "Synthesize eye",
+                "Pick a high-speed net (or enter manually):",
+                items, 0, /*editable=*/false, &ok);
+            if (!ok) return;
+
+            if (choice != items.first()) {
+                // Find the selected net id by name.
+                int target_net = -1;
+                if (const auto* n = board_->find_net_by_name(choice.toStdString())) {
+                    target_net = n->id;
+                }
+                if (target_net >= 0) {
+                    // Compute median trace width and total length on F.Cu.
+                    std::vector<double> widths;
+                    double total_length = 0.0;
+                    for (const auto& s : board_->segments) {
+                        if (s.net_id != target_net) continue;
+                        if (s.layer_ordinal != 0) continue;  // F.Cu only for v0
+                        widths.push_back(s.width);
+                        const double dx = s.end.x - s.start.x;
+                        const double dy = s.end.y - s.start.y;
+                        total_length += std::sqrt(dx * dx + dy * dy);
+                    }
+                    if (!widths.empty()) {
+                        std::sort(widths.begin(), widths.end());
+                        width_mm = widths[widths.size() / 2] * 1e3;
+                    }
+                    if (total_length > 0.0) length_mm = total_length * 1e3;
+                    net_label = choice;
+                }
+            }
+        }
+    }
+
+    width_mm = QInputDialog::getDouble(
         this, "Synthesize eye", "Trace width (mm):",
-        0.20, 0.05, 5.0, 3, &ok);
+        width_mm, 0.05, 5.0, 3, &ok);
     if (!ok) return;
-    const double length_mm = QInputDialog::getDouble(
+    length_mm = QInputDialog::getDouble(
         this, "Synthesize eye", "Trace length (mm):",
-        50.0, 1.0, 1000.0, 1, &ok);
+        length_mm, 1.0, 5000.0, 1, &ok);
     if (!ok) return;
     const double baud_gbps = QInputDialog::getDouble(
         this, "Synthesize eye", "Bit rate (Gbps):",
@@ -278,8 +331,12 @@ void MainWindow::onSynthesizeEye() {
 
     auto* w = new EyeWindow(this);
     w->setAttribute(Qt::WA_DeleteOnClose);
+    const QString head = net_label.isEmpty()
+                             ? QString("synthesized trace")
+                             : QString("net %1").arg(net_label);
     w->setTitleSubtext(
-        QString("W=%1mm  L=%2mm  Z₀=%3Ω  %4 Gbps")
+        QString("%1 · W=%2mm  L=%3mm  Z₀=%4Ω  %5 Gbps")
+            .arg(head)
             .arg(width_mm, 0, 'f', 3).arg(length_mm, 0, 'f', 1)
             .arg(imp.z0, 0, 'f', 1).arg(baud_gbps, 0, 'f', 2));
     w->setEye(eye);
