@@ -47,6 +47,7 @@ add_executable(sikit_tests
     project_test.cpp
     via_model_test.cpp
     roughness_test.cpp
+    stat_eye_test.cpp
 )
 
 target_link_libraries(sikit_tests PRIVATE

@@ -54,6 +54,7 @@ add_library(sikit_core STATIC
     src/eye/Eye.cpp
     src/eye/EyeMetrics.cpp
     src/eye/Bathtub.cpp
+    src/eye/StatEye.cpp
     src/specs/EyeMask.cpp
     src/dsp/Fft.cpp
     src/dsp/ChannelResponse.cpp
