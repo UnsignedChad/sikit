@@ -15,6 +15,7 @@ add_executable(sikit_tests
     impedance_test.cpp
     diff_pair_test.cpp
     trace_impedance_test.cpp
+    sparam_test.cpp
 )
 
 target_link_libraries(sikit_tests PRIVATE
