@@ -34,6 +34,8 @@ add_executable(sikit_tests
     eye_metrics_test.cpp
     bathtub_test.cpp
     diff_synth_test.cpp
+    camera3d_test.cpp
+    mesher3d_test.cpp
     reference_data_test.cpp
     eye_mask_test.cpp
     fft_test.cpp
