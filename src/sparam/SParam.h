@@ -36,11 +36,42 @@ Eigen::Matrix2cd cascade(const Eigen::Matrix2cd& a,
 touchstone::TouchstoneFile cascade(const touchstone::TouchstoneFile& a,
                                     const touchstone::TouchstoneFile& b);
 
+// Port-ordering convention used by mixed-mode conversion. Convention
+// names match the way Touchstone files in the wild are organised:
+//   PNPN: [P1, N1, P2, N2]   most VNA exports + Pozar §7.2
+//   PPNN: [P1, P2, N1, N2]   the order DiffSynth.cpp emits
+enum class PortOrder {
+    PNPN,
+    PPNN,
+};
+
 // Extract the differential-mode 2×2 S-matrix Sdd from a 4-port
-// single-ended block. Convention: ports 1,3 are the "positive" halves of
-// pairs A and B; ports 2,4 are the "negative" halves. The standard mixed-
-// mode transformation matrix is applied.
-Eigen::Matrix2cd single_ended_to_differential(const Eigen::Matrix4cd& s_se);
+// single-ended block. Port order defaults to PNPN.
+Eigen::Matrix2cd single_ended_to_differential(const Eigen::Matrix4cd& s_se,
+                                              PortOrder order = PortOrder::PNPN);
+
+// Full mixed-mode 4×4: layout is
+//
+//     [ Sdd11 Sdd12 | Sdc11 Sdc12 ]
+//     [ Sdd21 Sdd22 | Sdc21 Sdc22 ]
+//     [-------------+-------------]
+//     [ Scd11 Scd12 | Scc11 Scc12 ]
+//     [ Scd21 Scd22 | Scc21 Scc22 ]
+//
+// where d = differential mode (P − N)/√2, c = common mode (P + N)/√2.
+// The top-left 2×2 is the same Sdd block returned by
+// single_ended_to_differential. The off-diagonal blocks measure mode
+// conversion -- Sdc != 0 means an applied common-mode signal produces
+// differential noise, which is exactly the EMI failure mode skew creates.
+Eigen::Matrix4cd single_ended_to_mixed_mode(const Eigen::Matrix4cd& s_se,
+                                            PortOrder order = PortOrder::PNPN);
+
+// Convert an entire 4-port Touchstone file to a 4-port mixed-mode
+// Touchstone file. Port semantics in the result are [d1, d2, c1, c2]:
+// the output is still N=4 so any plot widget that handles 4-port files
+// works directly, but the curves represent S_dd / S_dc / S_cd / S_cc.
+touchstone::TouchstoneFile to_mixed_mode(const touchstone::TouchstoneFile& a,
+                                          PortOrder order = PortOrder::PNPN);
 
 // Insertion loss in dB. Positive values = attenuation.
 double insertion_loss_db(Complex s21);

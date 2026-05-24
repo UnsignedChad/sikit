@@ -108,24 +108,80 @@ touchstone::TouchstoneFile cascade(const touchstone::TouchstoneFile& a,
     return out;
 }
 
-Eigen::Matrix2cd single_ended_to_differential(const Eigen::Matrix4cd& s_se) {
-    // Standard mixed-mode transform. Convention: port order is
-    //     [P1+, P1-, P2+, P2-]
-    // i.e. positive halves at indices 0, 2; negative halves at 1, 3.
-    //
-    // M = 1/√2 * [[1, -1,  0,  0],
-    //            [0,  0,  1, -1],
-    //            [1,  1,  0,  0],
-    //            [0,  0,  1,  1]]
-    // S_mm = M * S_se * M^{-1};  Sdd is the upper-left 2×2 block.
-    Eigen::Matrix4cd M;
+namespace {
+
+// Mixed-mode transform matrix M such that S_mm = M * S_se * M^{-1}.
+// Output channel order (rows of M, and so rows/cols of S_mm) is fixed:
+//   row 0: d1 = differential mode on pair 1  = (P1 - N1) / sqrt(2)
+//   row 1: d2 = differential mode on pair 2  = (P2 - N2) / sqrt(2)
+//   row 2: c1 = common mode on pair 1        = (P1 + N1) / sqrt(2)
+//   row 3: c2 = common mode on pair 2        = (P2 + N2) / sqrt(2)
+// Columns of M are indexed by the *input* single-ended port order.
+Eigen::Matrix4cd mixed_mode_M(PortOrder order) {
     const double k = 1.0 / std::sqrt(2.0);
-    M << k, -k,  0,  0,
-         0,  0,  k, -k,
-         k,  k,  0,  0,
-         0,  0,  k,  k;
+    Eigen::Matrix4cd M = Eigen::Matrix4cd::Zero();
+    int p1, n1, p2, n2;
+    if (order == PortOrder::PNPN) {
+        // [P1, N1, P2, N2]
+        p1 = 0; n1 = 1; p2 = 2; n2 = 3;
+    } else {
+        // [P1, P2, N1, N2]
+        p1 = 0; p2 = 1; n1 = 2; n2 = 3;
+    }
+    M(0, p1) =  k;  M(0, n1) = -k;   // d1
+    M(1, p2) =  k;  M(1, n2) = -k;   // d2
+    M(2, p1) =  k;  M(2, n1) =  k;   // c1
+    M(3, p2) =  k;  M(3, n2) =  k;   // c2
+    return M;
+}
+
+}  // namespace
+
+Eigen::Matrix2cd single_ended_to_differential(const Eigen::Matrix4cd& s_se,
+                                              PortOrder order) {
+    const Eigen::Matrix4cd M = mixed_mode_M(order);
     const Eigen::Matrix4cd S_mm = M * s_se * M.inverse();
     return S_mm.topLeftCorner<2, 2>();
+}
+
+Eigen::Matrix4cd single_ended_to_mixed_mode(const Eigen::Matrix4cd& s_se,
+                                            PortOrder order) {
+    const Eigen::Matrix4cd M = mixed_mode_M(order);
+    return M * s_se * M.inverse();
+}
+
+touchstone::TouchstoneFile to_mixed_mode(const touchstone::TouchstoneFile& a,
+                                          PortOrder order) {
+    if (a.num_ports != 4) {
+        throw SParamError(std::format(
+            "to_mixed_mode requires a 4-port file; got {}", a.num_ports));
+    }
+    touchstone::TouchstoneFile out;
+    out.num_ports = 4;
+    out.format = a.format;
+    out.reference_impedance = a.reference_impedance;
+    out.frequency_scale = a.frequency_scale;
+    out.frequencies = a.frequencies;
+    out.s_matrices.reserve(a.frequencies.size());
+
+    for (std::size_t k = 0; k < a.frequencies.size(); ++k) {
+        Eigen::Matrix4cd S;
+        // Touchstone storage is column-major: flat[r + c*N].
+        for (int r = 0; r < 4; ++r) {
+            for (int c = 0; c < 4; ++c) {
+                S(r, c) = a.s_matrices[k][r + c * 4];
+            }
+        }
+        const Eigen::Matrix4cd S_mm = single_ended_to_mixed_mode(S, order);
+        std::vector<Complex> flat(16);
+        for (int r = 0; r < 4; ++r) {
+            for (int c = 0; c < 4; ++c) {
+                flat[r + c * 4] = S_mm(r, c);
+            }
+        }
+        out.s_matrices.push_back(std::move(flat));
+    }
+    return out;
 }
 
 double insertion_loss_db(Complex s21) {

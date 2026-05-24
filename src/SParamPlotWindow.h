@@ -36,6 +36,13 @@ public:
     void setData(const sikit::touchstone::TouchstoneFile& ts);
     void setTitleSubtext(const QString& text);
 
+    // For a 4-port file (.s4p only), set whether the conversion to mixed-
+    // mode S-parameters is supported. Caller supplies the single-ended
+    // port order so the M matrix is built correctly. Default: not
+    // available (the toggle is hidden).
+    enum class MixedModeAvailability { Unavailable, PortOrderPNPN, PortOrderPPNN };
+    void setMixedModeAvailable(MixedModeAvailability v);
+
     // The plot canvas calls this with itself as the paint target.
     // Public so the in-cpp PlotCanvas helper (anonymous namespace) can
     // reach it without needing a matching forward declaration.
@@ -44,9 +51,11 @@ public:
 private slots:
     void onModeChanged(int idx);
     void onCurveToggled();
+    void onMixedModeToggled(bool on);
 
 private:
     void rebuildCurveCheckboxes();
+    void applyMixedModeIfRequested();
 
     sikit::touchstone::TouchstoneFile ts_;
     YMode mode_ = YMode::MagnitudeDb;
@@ -55,6 +64,9 @@ private:
     std::vector<QCheckBox*> curve_checks_;
 
     QComboBox* mode_combo_ = nullptr;
+    class QCheckBox* mixed_mode_check_ = nullptr;
+    MixedModeAvailability mm_avail_ = MixedModeAvailability::Unavailable;
+    sikit::touchstone::TouchstoneFile ts_se_;  // original single-ended (if any)
     QWidget* curves_holder_ = nullptr;
     QGridLayout* curves_grid_ = nullptr;
     QLabel* caption_ = nullptr;

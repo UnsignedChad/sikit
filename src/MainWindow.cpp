@@ -944,6 +944,13 @@ void MainWindow::onOpenSParamPlot() {
     auto* w = new SParamPlotWindow(this);
     w->setWindowFlag(Qt::Window);
     w->setData(ts);
+    if (ts.num_ports == 4) {
+        // We do not know the port-order convention of an arbitrary
+        // .s4p file; assume the more common [P1, N1, P2, N2] (PNPN).
+        // Users with PPNN files can re-synthesise via the Analyze menu.
+        w->setMixedModeAvailable(
+            SParamPlotWindow::MixedModeAvailability::PortOrderPNPN);
+    }
     w->setTitleSubtext(QFileInfo(path).fileName());
     w->show();
 }
@@ -1109,6 +1116,9 @@ void MainWindow::onPlotDiffPairSParam() {
     auto* w = new SParamPlotWindow(this);
     w->setWindowFlag(Qt::Window);
     w->setData(ts);
+    // DiffSynth emits port order [P1, P2, N1, N2] -- PPNN.
+    w->setMixedModeAvailable(
+        SParamPlotWindow::MixedModeAvailability::PortOrderPPNN);
     w->setTitleSubtext(QString("%1 (diff, W=%2mm S=%3mm L=%4mm)")
                            .arg(choice)
                            .arg(meta.trace_width * 1e3, 0, 'f', 3)

@@ -144,3 +144,83 @@ TEST_CASE("sparam: single-ended-to-differential basics", "[sparam]") {
     // |Sdd21| should be 1 (ideal differential passthrough).
     REQUIRE(std::abs(sdd(1, 0)) == Approx(1.0).margin(1e-9));
 }
+
+TEST_CASE("sparam: mixed-mode 4x4 — ideal passthrough has Sdd21=1, Sdc=0", "[sparam]") {
+    // [P1, N1, P2, N2] passthrough: P1↔P2 and N1↔N2.
+    Eigen::Matrix4cd s = Eigen::Matrix4cd::Zero();
+    s(2, 0) = Complex(1, 0); s(0, 2) = Complex(1, 0);
+    s(3, 1) = Complex(1, 0); s(1, 3) = Complex(1, 0);
+
+    auto mm = sikit::sparam::single_ended_to_mixed_mode(
+        s, sikit::sparam::PortOrder::PNPN);
+
+    // Sdd21 (row 1, col 0): differential mode passes through cleanly.
+    REQUIRE(std::abs(mm(1, 0)) == Approx(1.0).margin(1e-9));
+    // Sdd11 (row 0, col 0): no reflection.
+    REQUIRE(std::abs(mm(0, 0)) == Approx(0.0).margin(1e-9));
+    // Symmetric pair → zero mode-conversion. Sdc21 (row 1, col 2) = 0,
+    // Scd21 (row 3, col 0) = 0.
+    REQUIRE(std::abs(mm(1, 2)) == Approx(0.0).margin(1e-9));
+    REQUIRE(std::abs(mm(3, 0)) == Approx(0.0).margin(1e-9));
+    // Scc21 (row 3, col 2): common mode passes through too.
+    REQUIRE(std::abs(mm(3, 2)) == Approx(1.0).margin(1e-9));
+}
+
+TEST_CASE("sparam: mixed-mode PPNN convention", "[sparam]") {
+    // Same physical network, but port order is [P1, P2, N1, N2].
+    // P1↔P2 is now S21=1, N1↔N2 is S43=1.
+    Eigen::Matrix4cd s = Eigen::Matrix4cd::Zero();
+    s(1, 0) = Complex(1, 0); s(0, 1) = Complex(1, 0);
+    s(3, 2) = Complex(1, 0); s(2, 3) = Complex(1, 0);
+
+    auto mm = sikit::sparam::single_ended_to_mixed_mode(
+        s, sikit::sparam::PortOrder::PPNN);
+
+    REQUIRE(std::abs(mm(1, 0)) == Approx(1.0).margin(1e-9));   // Sdd21
+    REQUIRE(std::abs(mm(3, 2)) == Approx(1.0).margin(1e-9));   // Scc21
+    REQUIRE(std::abs(mm(1, 2)) == Approx(0.0).margin(1e-9));   // Sdc21
+}
+
+TEST_CASE("sparam: skewed pair leaks differential→common (Sdc != 0)", "[sparam]") {
+    // Inject a half-amp loss on N only: P passes 1, N passes 0.7.
+    // This creates an imbalance, so a differential input produces some
+    // common-mode response → non-zero Scd entry.
+    Eigen::Matrix4cd s = Eigen::Matrix4cd::Zero();
+    s(2, 0) = Complex(1.0, 0); s(0, 2) = Complex(1.0, 0);  // P1→P2 = 1
+    s(3, 1) = Complex(0.7, 0); s(1, 3) = Complex(0.7, 0);  // N1→N2 = 0.7
+
+    auto mm = sikit::sparam::single_ended_to_mixed_mode(
+        s, sikit::sparam::PortOrder::PNPN);
+    // Scd21 (common-mode output from differential input) is non-zero.
+    REQUIRE(std::abs(mm(3, 0)) > 0.01);
+}
+
+TEST_CASE("sparam: to_mixed_mode round-trips a TouchstoneFile", "[sparam]") {
+    using namespace sikit::touchstone;
+    TouchstoneFile a;
+    a.num_ports = 4;
+    a.frequencies = {1e9};
+    // Build same ideal passthrough at one frequency point.
+    std::vector<Complex> m(16, Complex(0, 0));
+    m[2 + 0 * 4] = m[0 + 2 * 4] = Complex(1, 0);  // P1↔P2
+    m[3 + 1 * 4] = m[1 + 3 * 4] = Complex(1, 0);  // N1↔N2
+    a.s_matrices.push_back(std::move(m));
+
+    auto b = sikit::sparam::to_mixed_mode(a, sikit::sparam::PortOrder::PNPN);
+    REQUIRE(b.num_ports == 4);
+    REQUIRE(b.frequencies.size() == 1);
+    // Sdd21 lives at row=1, col=0 → column-major index 1.
+    REQUIRE(std::abs(b.s_matrices[0][1]) == Approx(1.0).margin(1e-9));
+    // Scc21 → row 3, col 2 → index 3 + 2*4 = 11.
+    REQUIRE(std::abs(b.s_matrices[0][3 + 2 * 4]) == Approx(1.0).margin(1e-9));
+}
+
+TEST_CASE("sparam: to_mixed_mode rejects non-4-port files", "[sparam]") {
+    using namespace sikit::touchstone;
+    TouchstoneFile a;
+    a.num_ports = 2;
+    a.frequencies = {1e9};
+    a.s_matrices.push_back({Complex(0, 0), Complex(1, 0), Complex(1, 0), Complex(0, 0)});
+    REQUIRE_THROWS_AS(sikit::sparam::to_mixed_mode(a),
+                      sikit::sparam::SParamError);
+}

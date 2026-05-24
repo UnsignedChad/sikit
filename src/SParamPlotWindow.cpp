@@ -1,5 +1,7 @@
 #include "SParamPlotWindow.h"
 
+#include "sparam/SParam.h"
+
 #include <algorithm>
 #include <cmath>
 #include <numbers>
@@ -105,6 +107,12 @@ SParamPlotWindow::SParamPlotWindow(QWidget* parent) : QWidget(parent) {
     connect(mode_combo_, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &SParamPlotWindow::onModeChanged);
     top->addWidget(mode_combo_);
+    mixed_mode_check_ = new QCheckBox("Mixed-mode (Sdd / Sdc / Scd / Scc)", this);
+    mixed_mode_check_->setVisible(false);
+    connect(mixed_mode_check_, &QCheckBox::toggled,
+            this, &SParamPlotWindow::onMixedModeToggled);
+    top->addSpacing(16);
+    top->addWidget(mixed_mode_check_);
     top->addStretch();
     outer->addLayout(top);
 
@@ -129,6 +137,8 @@ SParamPlotWindow::SParamPlotWindow(QWidget* parent) : QWidget(parent) {
 
 void SParamPlotWindow::setData(const sikit::touchstone::TouchstoneFile& ts) {
     ts_ = ts;
+    ts_se_ = ts;       // remember the single-ended baseline for later toggle
+    if (mixed_mode_check_) mixed_mode_check_->setChecked(false);
     rebuildCurveCheckboxes();
     plot_canvas_->update();
 }
@@ -161,8 +171,23 @@ void SParamPlotWindow::rebuildCurveCheckboxes() {
     int curveIdx = 0;
     for (int r = 0; r < N; ++r) {
         for (int c = 0; c < N; ++c) {
-            auto* cb = new QCheckBox(QString("S%1%2").arg(r + 1).arg(c + 1),
-                                     curves_holder_);
+            // In mixed-mode the rows/cols map to (d1, d2, c1, c2).
+            // Label them as Sxx_ij where xx in {dd, dc, cd, cc}.
+            QString label;
+            if (mixed_mode_check_ && mixed_mode_check_->isChecked() &&
+                mm_avail_ != MixedModeAvailability::Unavailable && N == 4) {
+                static const char* names[4] = {"d1", "d2", "c1", "c2"};
+                const int rt = r / 2;  // 0=d-block, 1=c-block on output side
+                const int ct = c / 2;  // 0=d-block, 1=c-block on input side
+                static const char* blk[2][2] = {{"dd", "dc"}, {"cd", "cc"}};
+                const int ri = r % 2 + 1;  // port index within block
+                const int ci = c % 2 + 1;
+                label = QString("S%1%2%3").arg(blk[rt][ct]).arg(ri).arg(ci);
+                (void)names;
+            } else {
+                label = QString("S%1%2").arg(r + 1).arg(c + 1);
+            }
+            auto* cb = new QCheckBox(label, curves_holder_);
             // Default visibility: diagonal + S21 + S12 (the usual interesting
             // 2-port set). For larger files leave them unchecked so the plot
             // doesn't start as a 16-curve mess.
@@ -390,4 +415,40 @@ void SParamPlotWindow::paintPlotInto(QWidget* target) {
     cap += QString("    Y ∈ [%1, %2] %3")
                .arg(y_min, 0, 'f', 2).arg(y_max, 0, 'f', 2).arg(y_title);
     caption_->setText(cap);
+}
+
+// ---------- Mixed-mode (Tier 1.2) ---------------------------------------
+
+void SParamPlotWindow::setMixedModeAvailable(MixedModeAvailability v) {
+    mm_avail_ = v;
+    if (mixed_mode_check_) {
+        mixed_mode_check_->setVisible(v != MixedModeAvailability::Unavailable);
+        if (v == MixedModeAvailability::Unavailable) {
+            mixed_mode_check_->setChecked(false);
+        }
+    }
+}
+
+void SParamPlotWindow::onMixedModeToggled(bool /*on*/) {
+    applyMixedModeIfRequested();
+    rebuildCurveCheckboxes();
+    plot_canvas_->update();
+}
+
+void SParamPlotWindow::applyMixedModeIfRequested() {
+    if (!mixed_mode_check_ || !mixed_mode_check_->isChecked() ||
+        mm_avail_ == MixedModeAvailability::Unavailable ||
+        ts_se_.num_ports != 4) {
+        // Restore the original single-ended data.
+        ts_ = ts_se_;
+        return;
+    }
+    const auto order = (mm_avail_ == MixedModeAvailability::PortOrderPPNN)
+                           ? sikit::sparam::PortOrder::PPNN
+                           : sikit::sparam::PortOrder::PNPN;
+    try {
+        ts_ = sikit::sparam::to_mixed_mode(ts_se_, order);
+    } catch (...) {
+        ts_ = ts_se_;  // give up silently; checkbox stays checked but unused
+    }
 }
