@@ -39,6 +39,7 @@ add_library(sikit_core STATIC
     src/highspeed/DiffPair.cpp
     src/analysis/TraceImpedance.cpp
     src/sparam/SParam.cpp
+    src/eye/Eye.cpp
 )
 target_include_directories(sikit_core PUBLIC src)
 target_include_directories(sikit_core PUBLIC third_party)
