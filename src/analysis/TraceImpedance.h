@@ -56,6 +56,15 @@ SegmentImpedance compute_one_fdm(double trace_width,
                                   int layer_ordinal,
                                   const AnalysisStackup& s);
 
+// FDM-based differential impedance for an edge-coupled pair. Builds a
+// cross-section with two parallel traces (same width, edge-to-edge gap
+// `spacing`) and excites the odd mode (V_p=+0.5, V_n=−0.5, ground=0).
+// Z_diff = 2 / (c · √(C_odd · C_odd_air)). Returns 0 on solver failure.
+double compute_diff_z0_fdm(double trace_width,
+                            double spacing,
+                            int layer_ordinal,
+                            const AnalysisStackup& s);
+
 // Batch driver. `engine` selects which single-segment kernel to use; the
 // FDM path caches by (width, layer_ordinal) so total work scales with
 // the number of unique trace geometries, not total segment count.

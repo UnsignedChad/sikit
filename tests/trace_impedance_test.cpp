@@ -143,6 +143,43 @@ TEST_CASE("engine: FDM and closed-form agree to within ~25% on microstrip", "[tr
     REQUIRE(rel < 0.25);
 }
 
+TEST_CASE("diff FDM: Z_diff in the right neighbourhood for ~100 Ω geometry", "[trace]") {
+    // Edge-coupled microstrip diff pair on 1 mm FR-4, ~100 Ω target.
+    AnalysisStackup s;
+    s.outer_dielectric_height = 1.0e-3;
+    s.copper_thickness = 35e-6;
+    s.epsilon_r = 4.4;
+
+    const double W = 1.5e-3;
+    const double S = 0.5e-3;
+    const double z_diff = compute_diff_z0_fdm(W, S, 0, s);
+
+    // For a target geometry that produces ~80–120 Ω diff in FR-4 we expect
+    // FDM to land somewhere in that band. Looser bound than single-ended
+    // because the coupling math compounds discretization error.
+    REQUIRE(z_diff > 60.0);
+    REQUIRE(z_diff < 150.0);
+
+    // Cross-check against the Wadell formula via the same single-ended
+    // engine result: diff should be > 1.5 × single-ended (tightly coupled
+    // is the only way to get below that).
+    auto se = compute_one_fdm(W, 0, s);
+    REQUIRE(z_diff > 1.5 * se.z0);
+}
+
+TEST_CASE("diff FDM: closer spacing yields lower Z_diff", "[trace]") {
+    AnalysisStackup s;
+    s.outer_dielectric_height = 1.0e-3;
+
+    const double W = 1.5e-3;
+    const double z_far  = compute_diff_z0_fdm(W, 1.0e-3, 0, s);
+    const double z_near = compute_diff_z0_fdm(W, 0.2e-3, 0, s);
+
+    REQUIRE(z_far  > 0);
+    REQUIRE(z_near > 0);
+    REQUIRE(z_near < z_far);
+}
+
 TEST_CASE("engine: compute_all caches FDM results per (width, layer)", "[trace]") {
     // Build a board with many segments of the same width and verify that
     // every segment ends up with the SAME z0 (i.e. the cache fired). Use

@@ -157,6 +157,92 @@ SegmentImpedance compute_one(double trace_width, int layer_ordinal,
     return r;
 }
 
+namespace {
+
+em2d::CrossSection make_diff_xsection(double trace_width, double spacing,
+                                       int layer_ordinal,
+                                       const AnalysisStackup& s) {
+    em2d::CrossSection cs;
+    cs.air_above = 5.0 * s.outer_dielectric_height;
+
+    const double half_box = std::max(8e-3, 3.0 * (2.0 * trace_width + spacing));
+    cs.y_min = -half_box;
+    cs.y_max =  half_box;
+
+    const double offset = 0.5 * (trace_width + spacing);
+
+    em2d::Conductor trace_p, trace_n, gnd;
+    trace_p.id = 0;       trace_p.y_center = -offset;
+    trace_n.id = 1;       trace_n.y_center = +offset;
+    gnd.id     = 2;       gnd.y_center = 0;
+    trace_p.width = trace_n.width = trace_width;
+    trace_p.thickness = trace_n.thickness = s.copper_thickness;
+    trace_p.voltage =  0.5;   // V_p − V_n = 1 → C extracted = C_odd
+    trace_n.voltage = -0.5;
+    gnd.voltage = 0.0;
+
+    if (is_outer_copper(layer_ordinal)) {
+        cs.stack.push_back({s.outer_dielectric_height, s.epsilon_r, 0.0, ""});
+        trace_p.z_top = -s.copper_thickness;
+        trace_n.z_top = -s.copper_thickness;
+        gnd.z_top     =  s.outer_dielectric_height;
+        gnd.width = 2.0 * half_box;
+        gnd.thickness = std::max(s.copper_thickness, 1e-4);
+    } else {
+        const double half = 0.5 * s.inner_plane_separation;
+        cs.stack.push_back({half, s.epsilon_r, 0.0, ""});
+        cs.stack.push_back({half, s.epsilon_r, 0.0, ""});
+        trace_p.z_top = half - 0.5 * s.copper_thickness;
+        trace_n.z_top = half - 0.5 * s.copper_thickness;
+        gnd.z_top  = s.inner_plane_separation;
+        gnd.width  = 2.0 * half_box;
+        gnd.thickness = std::max(s.copper_thickness, 1e-4);
+        em2d::Conductor top_gnd = gnd;
+        top_gnd.id    = 2;
+        top_gnd.z_top = -gnd.thickness;
+        cs.conductors.push_back(top_gnd);
+    }
+    cs.conductors.push_back(trace_p);
+    cs.conductors.push_back(trace_n);
+    cs.conductors.push_back(gnd);
+    return cs;
+}
+
+}  // namespace
+
+double compute_diff_z0_fdm(double trace_width, double spacing,
+                            int layer_ordinal,
+                            const AnalysisStackup& s) {
+    if (trace_width <= 0.0 || spacing < 0.0) return 0.0;
+    constexpr double kC0 = 2.99792458e8;
+
+    auto cs = make_diff_xsection(trace_width, spacing, layer_ordinal, s);
+    em2d::SolveConfig cfg;
+    cfg.tolerance = 5e-6;
+    cfg.max_iterations = 100000;
+    const double h = cell_size_for(trace_width, s.copper_thickness);
+
+    em2d::FdmGrid g = em2d::build_grid(cs, h);
+    auto r1 = em2d::solve(g, cfg);
+    if (!r1.ok) return 0.0;
+    const double q = em2d::charge_per_length(g, /*trace_p=*/0);
+    if (q <= 0.0) return 0.0;
+
+    auto cs_air = cs;
+    for (auto& d : cs_air.stack) d.epsilon_r = 1.0;
+    em2d::FdmGrid g_air = em2d::build_grid(cs_air, h);
+    auto r2 = em2d::solve(g_air, cfg);
+    if (!r2.ok) return 0.0;
+    const double q_air = em2d::charge_per_length(g_air, /*trace_p=*/0);
+    if (q_air <= 0.0) return 0.0;
+
+    // Excitation is V_p = +0.5, V_n = −0.5 (V_diff = 1). For pure odd mode
+    // the per-conductor odd-mode capacitance is C_odd = Q / (V_p) = 2·Q.
+    // Z_odd = 1 / (c · √(C_odd · C_odd_air)) = 1 / (2 c · √(q · q_air)).
+    // Z_diff = 2 · Z_odd = 1 / (c · √(q · q_air)).
+    return 1.0 / (kC0 * std::sqrt(q * q_air));
+}
+
 SegmentImpedance compute_one_fdm(double trace_width, int layer_ordinal,
                                   const AnalysisStackup& s) {
     SegmentImpedance r;
