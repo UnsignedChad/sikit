@@ -22,6 +22,7 @@
 #include "dsp/ChannelResponse.h"
 #include "eye/Eye.h"
 #include "highspeed/DiffPair.h"
+#include "ibis/Ibis.h"
 #include "parser/KicadPcbParser.h"
 #include "specs/EyeMask.h"
 #include "touchstone/Touchstone.h"
@@ -50,6 +51,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     auto* openTs = fileMenu->addAction("Open &Touchstone for eye...");
     openTs->setShortcut(QKeySequence("Ctrl+T"));
     connect(openTs, &QAction::triggered, this, &MainWindow::onOpenTouchstoneEye);
+    auto* openIbis = fileMenu->addAction("Open &IBIS file...");
+    openIbis->setShortcut(QKeySequence("Ctrl+I"));
+    connect(openIbis, &QAction::triggered, this, &MainWindow::onOpenIbis);
     fileMenu->addSeparator();
     auto* exportTs = fileMenu->addAction("Export &net as Touchstone .s2p...");
     exportTs->setShortcut(QKeySequence("Ctrl+Shift+S"));
@@ -158,8 +162,23 @@ void MainWindow::onOpenTouchstoneEye() {
     const double baud = baud_gbps * 1e9;
     const double fs = baud * kSpu;
 
+    // Use IBIS ramp if a model is loaded; otherwise step NRZ.
     auto bits = sikit::eye::prbs7(kBitCount);
-    auto tx = sikit::eye::nrz_waveform(bits, kSpu);
+    double ramp_frac = 0.0;
+    QString tx_label = "step NRZ";
+    if (ibis_file_) {
+        for (const auto& m : ibis_file_->models) {
+            if (m.name == active_ibis_model_) {
+                ramp_frac = sikit::eye::ramp_fraction_from_ibis(m, baud);
+                tx_label = QString("IBIS %1 ramp")
+                               .arg(QString::fromStdString(m.name));
+                break;
+            }
+        }
+    }
+    auto tx = (ramp_frac > 0.0)
+                  ? sikit::eye::nrz_with_ramp(bits, kSpu, ramp_frac)
+                  : sikit::eye::nrz_waveform(bits, kSpu);
 
     std::vector<double> rx;
     try {
@@ -176,9 +195,10 @@ void MainWindow::onOpenTouchstoneEye() {
     auto* w = new EyeWindow(this);
     w->setAttribute(Qt::WA_DeleteOnClose);
     w->setTitleSubtext(
-        QString("%1 · %2 Gbps PRBS-7")
+        QString("%1 · %2 Gbps PRBS-7 · TX: %3")
             .arg(QFileInfo(path).fileName())
-            .arg(baud_gbps, 0, 'f', 2));
+            .arg(baud_gbps, 0, 'f', 2)
+            .arg(tx_label));
     w->setEye(eye);
     w->setMask(&mask);
     w->show();
@@ -324,6 +344,47 @@ void MainWindow::onExportNetTouchstone() {
     spdlog::info("exported {} to {} (W={:.3f}mm L={:.1f}mm)",
                  choice.toStdString(), path.toStdString(),
                  trace_width * 1e3, total_length * 1e3);
+}
+
+void MainWindow::onOpenIbis() {
+    const QString path = QFileDialog::getOpenFileName(
+        this, "Open IBIS file", QString(),
+        "IBIS (*.ibs);;All files (*)");
+    if (path.isEmpty()) return;
+
+    sikit::ibis::IbisFile f;
+    try {
+        f = sikit::ibis::IbisReader::read_file(path.toStdString());
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Open IBIS failed", e.what());
+        return;
+    }
+    if (f.models.empty()) {
+        QMessageBox::warning(this, "Open IBIS",
+                              "IBIS file contains no [Model] sections.");
+        return;
+    }
+
+    QStringList items;
+    for (const auto& m : f.models) items << QString::fromStdString(m.name);
+
+    bool ok = false;
+    const QString choice = (items.size() == 1)
+        ? items.first()
+        : QInputDialog::getItem(this, "Pick IBIS model",
+                                  "Select the buffer model to drive future eyes:",
+                                  items, 0, false, &ok);
+    if (items.size() > 1 && !ok) return;
+
+    ibis_file_ = std::move(f);
+    active_ibis_model_ = choice.toStdString();
+
+    statusBar()->showMessage(
+        QString("IBIS loaded: %1 — model %2 active. Eye diagrams will use this buffer.")
+            .arg(QFileInfo(path).fileName())
+            .arg(choice));
+    spdlog::info("ibis: loaded {} with model {} active",
+                 path.toStdString(), active_ibis_model_);
 }
 
 void MainWindow::onExportNetCsv() {
@@ -509,7 +570,21 @@ void MainWindow::onSynthesizeEye() {
     }
 
     auto bits = sikit::eye::prbs7(kBitCount);
-    auto tx = sikit::eye::nrz_waveform(bits, kSpu);
+    double ramp_frac = 0.0;
+    QString tx_label = "NRZ";
+    if (ibis_file_) {
+        for (const auto& m : ibis_file_->models) {
+            if (m.name == active_ibis_model_) {
+                ramp_frac = sikit::eye::ramp_fraction_from_ibis(m, baud);
+                tx_label = QString("IBIS %1 ramp")
+                               .arg(QString::fromStdString(m.name));
+                break;
+            }
+        }
+    }
+    auto tx = (ramp_frac > 0.0)
+                  ? sikit::eye::nrz_with_ramp(bits, kSpu, ramp_frac)
+                  : sikit::eye::nrz_waveform(bits, kSpu);
     std::vector<double> rx;
     try {
         rx = sikit::dsp::apply_channel(tx, fs, channel);
@@ -530,10 +605,11 @@ void MainWindow::onSynthesizeEye() {
                              ? QString("synthesized trace")
                              : QString("net %1").arg(net_label);
     w->setTitleSubtext(
-        QString("%1 · W=%2mm  L=%3mm  Z₀=%4Ω  %5 Gbps")
+        QString("%1 · W=%2mm  L=%3mm  Z₀=%4Ω  %5 Gbps · TX: %6")
             .arg(head)
             .arg(width_mm, 0, 'f', 3).arg(length_mm, 0, 'f', 1)
-            .arg(imp.z0, 0, 'f', 1).arg(baud_gbps, 0, 'f', 2));
+            .arg(imp.z0, 0, 'f', 1).arg(baud_gbps, 0, 'f', 2)
+            .arg(tx_label));
     w->setEye(eye);
     w->setMask(&mask);
     w->show();
@@ -616,7 +692,21 @@ void MainWindow::showEyeDiagramDemo(bool severe_isi) {
     const double fc = severe_isi ? kBaud / 3.0 : kBaud * 2.0;
 
     auto bits = sikit::eye::prbs7(kBitCount);
-    auto tx = sikit::eye::nrz_waveform(bits, kSpu);
+    double ramp_frac = 0.0;
+    QString tx_label = "NRZ";
+    if (ibis_file_) {
+        for (const auto& m : ibis_file_->models) {
+            if (m.name == active_ibis_model_) {
+                ramp_frac = sikit::eye::ramp_fraction_from_ibis(m, kBaud);
+                tx_label = QString("IBIS %1 ramp")
+                               .arg(QString::fromStdString(m.name));
+                break;
+            }
+        }
+    }
+    auto tx = (ramp_frac > 0.0)
+                  ? sikit::eye::nrz_with_ramp(bits, kSpu, ramp_frac)
+                  : sikit::eye::nrz_waveform(bits, kSpu);
     auto rx = sikit::eye::rc_lowpass(tx, dt, fc);
     auto eye = sikit::eye::build_eye(rx, kSpu, 128, 96, /*warmup=*/8);
 
@@ -625,10 +715,11 @@ void MainWindow::showEyeDiagramDemo(bool severe_isi) {
     auto* w = new EyeWindow(this);
     w->setAttribute(Qt::WA_DeleteOnClose);
     w->setTitleSubtext(
-        QString("PRBS-7 · %1 Gbps NRZ · RC channel fc=%2 %3")
+        QString("PRBS-7 · %1 Gbps %4 · RC channel fc=%2 %3")
             .arg(kBaud / 1e9, 0, 'f', 1)
             .arg(fc / 1e6, 0, 'f', 0)
-            .arg(severe_isi ? "MHz (heavy ISI)" : "MHz (clean)"));
+            .arg(severe_isi ? "MHz (heavy ISI)" : "MHz (clean)")
+            .arg(tx_label));
     w->setEye(eye);
     w->setMask(&mask);
     w->show();

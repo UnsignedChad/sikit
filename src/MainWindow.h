@@ -2,7 +2,9 @@
 
 #include <QMainWindow>
 #include <memory>
+#include <optional>
 
+#include "ibis/Ibis.h"
 #include "model/Board.h"
 
 class PcbCanvas;
@@ -23,12 +25,18 @@ private slots:
     void onSynthesizeEye();
     void onExportNetTouchstone();
     void onExportNetCsv();
+    void onOpenIbis();
 
 private:
     void populateLayerPanel();
     void showImpedanceOverlay(double target_z0);
     void showDiffPairOverlay(double target_z_diff);
     void showEyeDiagramDemo(bool severe_isi);
+
+    // Loaded IBIS file + currently-active model name (if any). Used by
+    // the eye-diagram pipeline to derive a realistic TX ramp time.
+    std::optional<sikit::ibis::IbisFile> ibis_file_;
+    std::string active_ibis_model_;
 
     PcbCanvas* canvas_;
     LayerPanel* layer_panel_;
