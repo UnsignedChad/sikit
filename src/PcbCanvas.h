@@ -14,6 +14,7 @@
 #include "model/Board.h"
 #include "render/Camera2D.h"
 #include "render/Camera3D.h"
+#include "render/Mesher3D.h"
 #include "render/SegmentMesher.h"
 
 class PcbCanvas : public QOpenGLWidget, protected QOpenGLFunctions_3_3_Core {
@@ -96,4 +97,20 @@ private:
 
     bool panning_ = false;
     QPoint last_mouse_;
+
+    // 3D pipeline. One lit shader, one VAO per mesh category so the paint
+    // path can swap depth/blend state between opaque (copper, vias) and
+    // translucent (dielectric) passes.
+    QOpenGLShaderProgram lit_prog_;
+    struct GpuMesh3D {
+        QOpenGLBuffer vbo{QOpenGLBuffer::VertexBuffer};
+        QOpenGLBuffer ibo{QOpenGLBuffer::IndexBuffer};
+        QOpenGLVertexArrayObject vao;
+        int index_count = 0;
+    };
+    GpuMesh3D mesh3d_dielectric_;
+    GpuMesh3D mesh3d_copper_;
+    GpuMesh3D mesh3d_vias_;
+    sikit::render::BoardMesh3D pending_mesh3d_;
+    bool mesh3d_dirty_ = false;
 };

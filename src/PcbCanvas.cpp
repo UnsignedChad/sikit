@@ -54,6 +54,39 @@ void main() {
 }
 )";
 
+// 3D lit shader. Vertex carries world-space position, normal, RGBA. The
+// fragment does ambient + Lambert with a fixed view-aligned light so the
+// board reads as solid geometry regardless of orbit angle.
+constexpr auto kLitVertSrc = R"(
+#version 330 core
+layout(location = 0) in vec3 a_pos;
+layout(location = 1) in vec3 a_normal;
+layout(location = 2) in vec4 a_color;
+uniform mat4 u_vp;
+out vec3 v_normal;
+out vec4 v_color;
+void main() {
+    gl_Position = u_vp * vec4(a_pos, 1.0);
+    v_normal = a_normal;
+    v_color = a_color;
+}
+)";
+
+constexpr auto kLitFragSrc = R"(
+#version 330 core
+in vec3 v_normal;
+in vec4 v_color;
+uniform vec3 u_light_dir;   // world-space direction *to* the light
+out vec4 frag_color;
+void main() {
+    vec3 n = normalize(v_normal);
+    float lambert = max(dot(n, normalize(u_light_dir)), 0.0);
+    float ambient = 0.35;
+    float intensity = ambient + (1.0 - ambient) * lambert;
+    frag_color = vec4(v_color.rgb * intensity, v_color.a);
+}
+)";
+
 int render_priority(int ord) {
     if (ord == 0) return 1000;
     if (ord == 31) return 500;
@@ -80,6 +113,8 @@ void PcbCanvas::setBoard(const sikit::model::Board* board) {
     if (board_) {
         pending_meshes_ = sikit::render::build_all_meshes(*board_);
         meshes_dirty_ = true;
+        pending_mesh3d_ = sikit::render::build_board_mesh_3d(*board_);
+        mesh3d_dirty_ = true;
         fitToBoard();
     }
     update();
@@ -213,6 +248,33 @@ void PcbCanvas::initializeGL() {
     vcol_prog_.addShaderFromSourceCode(QOpenGLShader::Fragment, kVcolFragSrc);
     vcol_prog_.link();
 
+    lit_prog_.addShaderFromSourceCode(QOpenGLShader::Vertex,   kLitVertSrc);
+    lit_prog_.addShaderFromSourceCode(QOpenGLShader::Fragment, kLitFragSrc);
+    lit_prog_.link();
+
+    auto init_3d_mesh = [&](GpuMesh3D& m) {
+        m.vao.create();
+        m.vbo.create();
+        m.ibo.create();
+        m.vao.bind();
+        m.vbo.bind();
+        m.ibo.bind();
+        // Vertex layout: 10 floats per vertex (pos3, normal3, rgba4).
+        const int stride = 10 * sizeof(float);
+        lit_prog_.enableAttributeArray(0);
+        lit_prog_.setAttributeBuffer(0, GL_FLOAT, 0,                 3, stride);
+        lit_prog_.enableAttributeArray(1);
+        lit_prog_.setAttributeBuffer(1, GL_FLOAT, 3 * sizeof(float), 3, stride);
+        lit_prog_.enableAttributeArray(2);
+        lit_prog_.setAttributeBuffer(2, GL_FLOAT, 6 * sizeof(float), 4, stride);
+        m.vao.release();
+        m.vbo.release();
+        m.ibo.release();
+    };
+    init_3d_mesh(mesh3d_dielectric_);
+    init_3d_mesh(mesh3d_copper_);
+    init_3d_mesh(mesh3d_vias_);
+
     grid_vao_.create();
     grid_vbo_.create();
     buildGrid();
@@ -333,6 +395,22 @@ void PcbCanvas::uploadOverlay() {
     overlay_dirty_ = false;
 }
 
+namespace {
+void upload_one_3d(QOpenGLBuffer& vbo, QOpenGLBuffer& ibo,
+                    int& index_count,
+                    const sikit::render::Mesh3D& mesh) {
+    vbo.bind();
+    vbo.allocate(mesh.vertices.data(),
+                 static_cast<int>(mesh.vertices.size() * sizeof(float)));
+    ibo.bind();
+    ibo.allocate(mesh.indices.data(),
+                 static_cast<int>(mesh.indices.size() * sizeof(std::uint32_t)));
+    index_count = static_cast<int>(mesh.indices.size());
+    vbo.release();
+    ibo.release();
+}
+}  // namespace
+
 void PcbCanvas::resizeGL(int w, int h) {
     glViewport(0, 0, w, h);
 }
@@ -342,11 +420,68 @@ void PcbCanvas::paintGL() {
     if (overlay_dirty_) uploadOverlay();
 
     if (view_mode_ == ViewMode::D3) {
-        // 3D meshes/shaders land in the next commit. For now clear to a
-        // distinct background so the mode toggle is visible end-to-end.
+        if (mesh3d_dirty_) {
+            mesh3d_dirty_ = false;
+            upload_one_3d(mesh3d_dielectric_.vbo, mesh3d_dielectric_.ibo,
+                          mesh3d_dielectric_.index_count,
+                          pending_mesh3d_.dielectric);
+            upload_one_3d(mesh3d_copper_.vbo, mesh3d_copper_.ibo,
+                          mesh3d_copper_.index_count,
+                          pending_mesh3d_.copper);
+            upload_one_3d(mesh3d_vias_.vbo, mesh3d_vias_.ibo,
+                          mesh3d_vias_.index_count,
+                          pending_mesh3d_.vias);
+        }
+
         glClearColor(0.06f, 0.07f, 0.10f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glClearColor(0.10f, 0.10f, 0.12f, 1.0f);
+        glEnable(GL_DEPTH_TEST);
+
+        const auto vp = camera3d_.view_projection(width(), height());
+        const QMatrix4x4 vpm(
+            vp[0], vp[4], vp[8],  vp[12],
+            vp[1], vp[5], vp[9],  vp[13],
+            vp[2], vp[6], vp[10], vp[14],
+            vp[3], vp[7], vp[11], vp[15]);
+
+        lit_prog_.bind();
+        lit_prog_.setUniformValue("u_vp", vpm);
+        // Light from above-front. Worldspace direction *to* the light.
+        lit_prog_.setUniformValue("u_light_dir",
+                                   QVector3D(0.3f, -0.5f, 0.8f).normalized());
+
+        // Opaque pass: copper + vias with depth write on, no blending.
+        glDisable(GL_BLEND);
+        if (mesh3d_copper_.index_count > 0) {
+            mesh3d_copper_.vao.bind();
+            glDrawElements(GL_TRIANGLES, mesh3d_copper_.index_count,
+                           GL_UNSIGNED_INT, nullptr);
+            mesh3d_copper_.vao.release();
+        }
+        if (mesh3d_vias_.index_count > 0) {
+            mesh3d_vias_.vao.bind();
+            glDrawElements(GL_TRIANGLES, mesh3d_vias_.index_count,
+                           GL_UNSIGNED_INT, nullptr);
+            mesh3d_vias_.vao.release();
+        }
+
+        // Translucent pass: dielectric slabs. Depth-test against the
+        // already-drawn opaque geometry, but don't write depth so multiple
+        // overlapping slabs blend cleanly.
+        if (mesh3d_dielectric_.index_count > 0) {
+            glEnable(GL_BLEND);
+            glDepthMask(GL_FALSE);
+            mesh3d_dielectric_.vao.bind();
+            glDrawElements(GL_TRIANGLES, mesh3d_dielectric_.index_count,
+                           GL_UNSIGNED_INT, nullptr);
+            mesh3d_dielectric_.vao.release();
+            glDepthMask(GL_TRUE);
+        }
+        lit_prog_.release();
+
+        glDisable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND);  // restore the 2D default
         return;
     }
 
