@@ -22,6 +22,7 @@ private slots:
 private:
     void populateLayerPanel();
     void showImpedanceOverlay(double target_z0);
+    void showEyeDiagram(bool severe_isi);
 
     PcbCanvas* canvas_;
     LayerPanel* layer_panel_;

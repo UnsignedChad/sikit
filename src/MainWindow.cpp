@@ -11,9 +11,11 @@
 #include <QStatusBar>
 #include <spdlog/spdlog.h>
 
+#include "EyeWindow.h"
 #include "LayerPanel.h"
 #include "PcbCanvas.h"
 #include "analysis/TraceImpedance.h"
+#include "eye/Eye.h"
 #include "parser/KicadPcbParser.h"
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
@@ -61,6 +63,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     auto* clearAct = analyzeMenu->addAction("&Clear overlay");
     clearAct->setShortcut(QKeySequence("Ctrl+0"));
     connect(clearAct, &QAction::triggered, canvas_, &PcbCanvas::clearImpedanceOverlay);
+    analyzeMenu->addSeparator();
+    auto* eyeOpen = analyzeMenu->addAction("Eye diagram — clean channel (demo)");
+    eyeOpen->setShortcut(QKeySequence("Ctrl+E"));
+    connect(eyeOpen, &QAction::triggered, this,
+            [this]() { showEyeDiagram(/*severe_isi=*/false); });
+    auto* eyeISI = analyzeMenu->addAction("Eye diagram — heavy ISI (demo)");
+    eyeISI->setShortcut(QKeySequence("Ctrl+Shift+E"));
+    connect(eyeISI, &QAction::triggered, this,
+            [this]() { showEyeDiagram(/*severe_isi=*/true); });
 
     hover_label_ = new QLabel(this);
     hover_label_->setMinimumWidth(300);
@@ -84,11 +95,10 @@ void MainWindow::showImpedanceOverlay(double target_z0) {
                                  "Open a KiCad PCB first.");
         return;
     }
-    sikit::analysis::AnalysisStackup stackup;  // defaults: 4-layer FR-4 prepreg
+    sikit::analysis::AnalysisStackup stackup;
     auto results = sikit::analysis::compute_all(*board_, stackup);
     canvas_->setImpedanceOverlay(results, target_z0);
 
-    // Quick on-spec tally for the status bar.
     int on_spec = 0, warn = 0, fail = 0;
     for (const auto& r : results) {
         const double err = std::abs(r.z0 - target_z0) / target_z0;
@@ -102,6 +112,37 @@ void MainWindow::showImpedanceOverlay(double target_z0) {
             .arg(on_spec).arg(warn).arg(fail));
     spdlog::info("impedance overlay target={}Ω: on-spec={} warn={} fail={}",
                  target_z0, on_spec, warn, fail);
+}
+
+void MainWindow::showEyeDiagram(bool severe_isi) {
+    // Build a synthetic eye until Touchstone S21 → time-domain integration
+    // lands. 1 Gbps virtual baud, PRBS-7, 32 samples per UI, RC channel.
+    // - severe_isi=false: cutoff = 2·baud  → clean eye
+    // - severe_isi=true:  cutoff = baud/3  → ISI clearly closes the eye
+    constexpr int kBitCount = 2000;
+    constexpr int kSpu = 32;
+    constexpr double kBaud = 1.0e9;
+    const double dt = 1.0 / (kBaud * kSpu);
+    const double fc = severe_isi ? kBaud / 3.0 : kBaud * 2.0;
+
+    auto bits = sikit::eye::prbs7(kBitCount);
+    auto tx = sikit::eye::nrz_waveform(bits, kSpu);
+    auto rx = sikit::eye::rc_lowpass(tx, dt, fc);
+    auto eye = sikit::eye::build_eye(rx, kSpu, 128, 96, /*warmup=*/8);
+
+    auto* w = new EyeWindow(this);
+    w->setAttribute(Qt::WA_DeleteOnClose);
+    w->setTitleSubtext(
+        QString("PRBS-7 · %1 Gbps NRZ · RC channel fc=%2 %3")
+            .arg(kBaud / 1e9, 0, 'f', 1)
+            .arg(fc / 1e6, 0, 'f', 0)
+            .arg(severe_isi ? "MHz (heavy ISI)" : "MHz (clean)"));
+    w->setEye(eye);
+    w->show();
+
+    statusBar()->showMessage(
+        QString("Eye built: %1 bits, %2 samples/UI, channel fc=%3 MHz")
+            .arg(kBitCount).arg(kSpu).arg(fc / 1e6, 0, 'f', 0));
 }
 
 void MainWindow::populateLayerPanel() {
