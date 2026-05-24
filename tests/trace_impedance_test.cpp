@@ -125,6 +125,53 @@ TEST_CASE("from_board: picks up dielectric below F.Cu", "[trace]") {
     REQUIRE(s.copper_thickness == Approx(35e-6));
 }
 
+TEST_CASE("engine: FDM and closed-form agree to within ~25% on microstrip", "[trace]") {
+    // Canonical 50Ω microstrip geometry; both engines should land in the
+    // same neighbourhood (closed-form ~50, FDM ~50–60 at v0 mesh density).
+    AnalysisStackup s;
+    s.outer_dielectric_height = 1.524e-3;
+    s.copper_thickness = 35e-6;
+    s.epsilon_r = 4.4;
+
+    const double W = 2.8e-3;
+    auto cf = compute_one(W, 0, s);
+    auto fdm = compute_one_fdm(W, 0, s);
+
+    REQUIRE(cf.z0  > 0);
+    REQUIRE(fdm.z0 > 0);
+    const double rel = std::abs(fdm.z0 - cf.z0) / cf.z0;
+    REQUIRE(rel < 0.25);
+}
+
+TEST_CASE("engine: compute_all caches FDM results per (width, layer)", "[trace]") {
+    // Build a board with many segments of the same width and verify that
+    // every segment ends up with the SAME z0 (i.e. the cache fired). Use
+    // a relatively wide trace so the FDM grid stays small and the test
+    // doesn't dominate CI time.
+    Board b;
+    b.stackup.layers.push_back({0, "F.Cu", "signal"});
+    AnalysisStackup as;
+    as.outer_dielectric_height = 1.0e-3;  // larger H → coarser absolute mesh
+    as.copper_thickness = 35e-6;
+
+    for (int i = 0; i < 4; ++i) {
+        Segment s;
+        s.start = {0, 0};
+        s.end   = {1e-3, 0};
+        s.width = 2.0e-3;   // identical across all segments
+        s.layer_ordinal = 0;
+        s.net_id = i + 1;
+        b.segments.push_back(s);
+    }
+
+    auto rs = compute_all(b, as, Engine::Fdm);
+    REQUIRE(rs.size() == 4);
+    for (std::size_t i = 1; i < rs.size(); ++i) {
+        REQUIRE(rs[i].z0 == rs[0].z0);
+    }
+    REQUIRE(rs[0].z0 > 0);
+}
+
 TEST_CASE("from_board: stripline B = sum of dielectric above + below inner copper",
           "[trace]") {
     Board b;

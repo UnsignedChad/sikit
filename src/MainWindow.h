@@ -7,6 +7,7 @@
 
 class PcbCanvas;
 class LayerPanel;
+class QAction;
 class QLabel;
 
 class MainWindow : public QMainWindow {
@@ -28,5 +29,6 @@ private:
     PcbCanvas* canvas_;
     LayerPanel* layer_panel_;
     QLabel* hover_label_;
+    QAction* use_fdm_action_;
     std::unique_ptr<sikit::model::Board> board_;
 };

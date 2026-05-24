@@ -71,6 +71,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     clearAct->setShortcut(QKeySequence("Ctrl+0"));
     connect(clearAct, &QAction::triggered, canvas_, &PcbCanvas::clearImpedanceOverlay);
     analyzeMenu->addSeparator();
+    use_fdm_action_ = analyzeMenu->addAction("Use FDM solver for impedance (slower, more accurate)");
+    use_fdm_action_->setCheckable(true);
+    use_fdm_action_->setChecked(false);
+    analyzeMenu->addSeparator();
     auto* eyeOpen = analyzeMenu->addAction("Eye diagram — clean RC channel (demo)");
     eyeOpen->setShortcut(QKeySequence("Ctrl+E"));
     connect(eyeOpen, &QAction::triggered, this,
@@ -173,7 +177,10 @@ void MainWindow::showImpedanceOverlay(double target_z0) {
         return;
     }
     const auto stackup = sikit::analysis::AnalysisStackup::from_board(*board_);
-    auto results = sikit::analysis::compute_all(*board_, stackup);
+    const auto engine = use_fdm_action_ && use_fdm_action_->isChecked()
+                            ? sikit::analysis::Engine::Fdm
+                            : sikit::analysis::Engine::ClosedForm;
+    auto results = sikit::analysis::compute_all(*board_, stackup, engine);
     canvas_->setImpedanceOverlay(results, target_z0);
 
     int on_spec = 0, warn = 0, fail = 0;
@@ -186,15 +193,19 @@ void MainWindow::showImpedanceOverlay(double target_z0) {
     const QString stackup_src = stackup.from_real_stackup
                                     ? "real stackup"
                                     : "default FR-4";
+    const QString engine_name =
+        (engine == sikit::analysis::Engine::Fdm) ? "FDM" : "closed-form";
     statusBar()->showMessage(
-        QString("Impedance overlay @ %1 Ω (%2): %3 on-spec (<5%), %4 warn (<10%), %5 fail (≥10%)")
+        QString("Impedance @ %1 Ω · %2 · %3: %4 on-spec (<5%), %5 warn (<10%), %6 fail (≥10%)")
             .arg(target_z0, 0, 'f', 0)
+            .arg(engine_name)
             .arg(stackup_src)
             .arg(on_spec).arg(warn).arg(fail));
-    spdlog::info("impedance overlay target={}Ω stackup={} εr={:.2f} H={:.3f}mm: "
+    spdlog::info("impedance overlay target={}Ω engine={} stackup={} εr={:.2f}: "
                  "on-spec={} warn={} fail={}",
-                 target_z0, stackup.from_real_stackup ? "real" : "default",
-                 stackup.epsilon_r, stackup.outer_dielectric_height * 1e3,
+                 target_z0, engine_name.toStdString(),
+                 stackup.from_real_stackup ? "real" : "default",
+                 stackup.epsilon_r,
                  on_spec, warn, fail);
 }
 

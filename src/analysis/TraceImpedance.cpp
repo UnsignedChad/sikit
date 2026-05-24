@@ -1,7 +1,12 @@
 #include "analysis/TraceImpedance.h"
 
+#include <algorithm>
 #include <cmath>
+#include <format>
+#include <unordered_map>
 
+#include "em2d/CrossSection.h"
+#include "em2d/FdmSolver.h"
 #include "impedance/Impedance.h"
 
 namespace sikit::analysis {
@@ -12,7 +17,6 @@ bool is_outer_copper(int ord) {
     return ord == 0 || ord == 31;
 }
 
-// Find the thickness of any copper item in the stackup. Returns -1 if none.
 double first_copper_thickness(const model::Stackup& s) {
     for (const auto& it : s.items) {
         if (it.kind == model::StackupItem::Kind::Copper && it.thickness > 0.0) {
@@ -22,13 +26,74 @@ double first_copper_thickness(const model::Stackup& s) {
     return -1.0;
 }
 
+// Build the synthetic cross-section the FDM solver evaluates for a single
+// trace on the given layer. Outer copper → microstrip-style (trace above
+// dielectric, ground plane at the other side). Inner copper → stripline
+// (trace at midplane, planes above and below).
+em2d::CrossSection make_xsection(double trace_width, int layer_ordinal,
+                                   const AnalysisStackup& s) {
+    em2d::CrossSection cs;
+    cs.air_above = 5.0 * s.outer_dielectric_height;
+
+    // Pick a horizontal box that's wide enough for the field to decay
+    // before hitting the side wall.
+    const double half_box = std::max(5e-3, 5.0 * trace_width);
+    cs.y_min = -half_box;
+    cs.y_max =  half_box;
+
+    em2d::Conductor trace;
+    trace.id = 0;
+    trace.y_center = 0;
+    trace.width = trace_width;
+    trace.thickness = s.copper_thickness;
+    trace.voltage = 1.0;
+
+    em2d::Conductor gnd;
+    gnd.id = 1;
+    gnd.y_center = 0;
+    gnd.width = 2.0 * half_box;
+    gnd.thickness = std::max(s.copper_thickness, 1e-4);
+    gnd.voltage = 0.0;
+
+    if (is_outer_copper(layer_ordinal)) {
+        cs.stack.push_back({s.outer_dielectric_height, s.epsilon_r, 0.0, ""});
+        trace.z_top = -s.copper_thickness;     // sits in the air above stack
+        gnd.z_top   = s.outer_dielectric_height; // just below board
+    } else {
+        // Stripline: two half-dielectrics, trace at the middle.
+        const double half = 0.5 * s.inner_plane_separation;
+        cs.stack.push_back({half, s.epsilon_r, 0.0, ""});
+        cs.stack.push_back({half, s.epsilon_r, 0.0, ""});
+        trace.z_top = half - 0.5 * s.copper_thickness;
+        // For stripline we need TWO ground planes — represent the upper one
+        // as another conductor at the top of the stack and the lower one
+        // at the bottom.
+        gnd.z_top = s.inner_plane_separation;
+        em2d::Conductor top_gnd = gnd;
+        top_gnd.id = 1;  // share an id with the bottom plane (same net)
+        top_gnd.z_top = -gnd.thickness;
+        cs.conductors.push_back(top_gnd);
+    }
+
+    cs.conductors.push_back(trace);
+    cs.conductors.push_back(gnd);
+    return cs;
+}
+
+// Pick a sensible FDM cell size for a given trace width. Aim for ~25
+// cells across the trace, clamped to a range that keeps grids workable.
+// We don't shrink h to the copper thickness: the build_grid classifier
+// uses cell-rect overlap, so a single-cell-thick trace still gets marked.
+double cell_size_for(double trace_width, double /*copper_thickness*/) {
+    return std::clamp(trace_width / 25.0, 20e-6, 200e-6);
+}
+
 }  // namespace
 
 AnalysisStackup AnalysisStackup::from_board(const model::Board& b) {
-    AnalysisStackup s;  // start from defaults
+    AnalysisStackup s;
 
     const model::StackupItem* outer_d = nullptr;
-    // For outer microstrip: dielectric immediately below F.Cu, or above B.Cu.
     if (const auto* d = b.stackup.adjacent_dielectric("F.Cu", +1)) outer_d = d;
     else if (const auto* d = b.stackup.adjacent_dielectric("B.Cu", -1)) outer_d = d;
     else outer_d = b.stackup.any_dielectric();
@@ -39,9 +104,6 @@ AnalysisStackup AnalysisStackup::from_board(const model::Board& b) {
         s.from_real_stackup = true;
     }
 
-    // For stripline: sum the two adjacent dielectric thicknesses on either
-    // side of the first inner copper layer (typical 4-layer board: prepreg
-    // above + core below = B).
     for (const auto& L : b.stackup.layers) {
         if (!L.is_copper() || is_outer_copper(L.ordinal)) continue;
         const auto* above = b.stackup.adjacent_dielectric(L.name, -1);
@@ -53,7 +115,7 @@ AnalysisStackup AnalysisStackup::from_board(const model::Board& b) {
             s.inner_plane_separation = sep;
             s.from_real_stackup = true;
         }
-        break;  // first inner copper layer is enough for v0
+        break;
     }
 
     const double cu_t = first_copper_thickness(b.stackup);
@@ -69,45 +131,87 @@ SegmentImpedance compute_one(double trace_width, int layer_ordinal,
     SegmentImpedance r;
     r.layer_ordinal = layer_ordinal;
     r.trace_width = trace_width;
-
     if (trace_width <= 0.0) {
-        r.z0 = 0.0;
         r.in_valid_range = false;
         return r;
     }
-
     if (is_outer_copper(layer_ordinal)) {
-        sikit::impedance::MicrostripParams mp{
+        impedance::MicrostripParams mp{
             .trace_width = trace_width,
             .dielectric_height = s.outer_dielectric_height,
             .trace_thickness = s.copper_thickness,
             .epsilon_r = s.epsilon_r,
         };
-        r.z0 = sikit::impedance::microstrip_z0(mp);
-        r.in_valid_range = sikit::impedance::microstrip_in_valid_range(mp);
+        r.z0 = impedance::microstrip_z0(mp);
+        r.in_valid_range = impedance::microstrip_in_valid_range(mp);
     } else {
-        sikit::impedance::StriplineParams sp{
+        impedance::StriplineParams sp{
             .trace_width = trace_width,
             .plane_separation = s.inner_plane_separation,
             .trace_thickness = s.copper_thickness,
             .epsilon_r = s.epsilon_r,
         };
-        r.z0 = sikit::impedance::stripline_z0(sp);
-        r.in_valid_range = sikit::impedance::stripline_in_valid_range(sp);
+        r.z0 = impedance::stripline_z0(sp);
+        r.in_valid_range = impedance::stripline_in_valid_range(sp);
     }
     return r;
 }
 
+SegmentImpedance compute_one_fdm(double trace_width, int layer_ordinal,
+                                  const AnalysisStackup& s) {
+    SegmentImpedance r;
+    r.layer_ordinal = layer_ordinal;
+    r.trace_width = trace_width;
+    if (trace_width <= 0.0) {
+        r.in_valid_range = false;
+        return r;
+    }
+    auto cs = make_xsection(trace_width, layer_ordinal, s);
+    em2d::SolveConfig cfg;
+    cfg.tolerance = 5e-6;
+    cfg.max_iterations = 100000;
+    const double h = cell_size_for(trace_width, s.copper_thickness);
+    auto out = em2d::compute_z0(cs, 0, 1, h, cfg);
+    if (!out.ok) {
+        r.in_valid_range = false;
+        return r;
+    }
+    r.z0 = out.z0_ohm;
+    return r;
+}
+
 std::vector<SegmentImpedance> compute_all(const model::Board& board,
-                                           const AnalysisStackup& s) {
+                                           const AnalysisStackup& s,
+                                           Engine engine) {
     std::vector<SegmentImpedance> out;
     out.reserve(board.segments.size());
+
+    // FDM cache: each unique (width, layer) combo solved once. Keyed by a
+    // string for portability; the precision is way more than enough to
+    // distinguish realistic trace widths.
+    std::unordered_map<std::string, SegmentImpedance> fdm_cache;
+    auto fdm_key = [](double w, int L) {
+        return std::format("{:.9f}|{}", w, L);
+    };
+
     for (std::size_t i = 0; i < board.segments.size(); ++i) {
         const auto& seg = board.segments[i];
         const auto* L = board.find_layer(seg.layer_ordinal);
         if (!L || !L->is_copper()) continue;
 
-        auto r = compute_one(seg.width, seg.layer_ordinal, s);
+        SegmentImpedance r;
+        if (engine == Engine::Fdm) {
+            const auto k = fdm_key(seg.width, seg.layer_ordinal);
+            auto it = fdm_cache.find(k);
+            if (it == fdm_cache.end()) {
+                r = compute_one_fdm(seg.width, seg.layer_ordinal, s);
+                fdm_cache.emplace(k, r);
+            } else {
+                r = it->second;
+            }
+        } else {
+            r = compute_one(seg.width, seg.layer_ordinal, s);
+        }
         r.segment_index = i;
         r.net_id = seg.net_id;
         out.push_back(r);
@@ -120,7 +224,6 @@ ImpedanceColor color_for_error(double z0_ohms, double target_ohms) {
         return {0.5f, 0.5f, 0.5f, 0.8f};
     }
     const double err = std::abs(z0_ohms - target_ohms) / target_ohms;
-
     if (err < 0.05) return {0.25f, 0.85f, 0.30f, 0.85f};
     if (err < 0.10) return {0.95f, 0.85f, 0.20f, 0.85f};
     return                  {0.92f, 0.30f, 0.25f, 0.85f};

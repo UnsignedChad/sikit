@@ -1,11 +1,15 @@
-// Per-trace impedance analysis driven by closed-form formulas (engine 1).
+// Per-trace impedance analysis with a swappable solver engine.
 //
-// Computes single-ended Z₀ for each segment on the board, picking the
-// microstrip or stripline formula based on whether the layer is outer
-// (F.Cu / B.Cu — air above one side) or inner copper. Uses an
-// AnalysisStackup struct of geometry assumptions which can be populated
-// from the board's parsed (setup (stackup ...)) data, or fall back to
-// generic 4-layer FR-4 defaults if the file lacks that information.
+//   Engine::ClosedForm   IPC-2141A formulas (fast, ±5–10%).
+//   Engine::Fdm          In-house 2D finite-difference solver (slower,
+//                        captures real stackup, ±10–15% at v0 mesh density).
+//
+// AnalysisStackup is consumed by both engines. For Fdm the trace is
+// embedded into a synthetic cross-section built from the stackup
+// parameters (single trace over a ground plane for outer copper; stripline
+// between two planes for inner copper). Results are cached by
+// (trace_width, layer_ordinal) so a board with many segments of the same
+// width pays one solve, not one per segment.
 
 #pragma once
 
@@ -16,15 +20,18 @@
 
 namespace sikit::analysis {
 
-struct AnalysisStackup {
-    double outer_dielectric_height = 0.2e-3;  // H for F.Cu / B.Cu (m)
-    double inner_plane_separation = 0.4e-3;   // B for inner stripline (m)
-    double copper_thickness = 35e-6;          // 1oz copper (m)
-    double epsilon_r = 4.4;                   // FR-4 nominal
-    bool   from_real_stackup = false;         // true → derived from board file
+enum class Engine {
+    ClosedForm,
+    Fdm,
+};
 
-    // Populate from a board's parsed (setup (stackup ...)) when available.
-    // Falls through to generic defaults for any field the file doesn't supply.
+struct AnalysisStackup {
+    double outer_dielectric_height = 0.2e-3;
+    double inner_plane_separation = 0.4e-3;
+    double copper_thickness = 35e-6;
+    double epsilon_r = 4.4;
+    bool   from_real_stackup = false;
+
     static AnalysisStackup from_board(const model::Board& b);
 };
 
@@ -37,12 +44,24 @@ struct SegmentImpedance {
     bool in_valid_range = true;
 };
 
+// Single-segment closed-form (Wadell / IPC-2141A).
 SegmentImpedance compute_one(double trace_width,
                              int layer_ordinal,
                              const AnalysisStackup& s);
 
+// Single-segment FDM. Caller bears the cost of one 2D Laplace solve per
+// call; use compute_all to reuse cached results across segments of the
+// same width and layer.
+SegmentImpedance compute_one_fdm(double trace_width,
+                                  int layer_ordinal,
+                                  const AnalysisStackup& s);
+
+// Batch driver. `engine` selects which single-segment kernel to use; the
+// FDM path caches by (width, layer_ordinal) so total work scales with
+// the number of unique trace geometries, not total segment count.
 std::vector<SegmentImpedance> compute_all(const model::Board& board,
-                                          const AnalysisStackup& s);
+                                          const AnalysisStackup& s,
+                                          Engine engine = Engine::ClosedForm);
 
 struct ImpedanceColor {
     float r, g, b, a;
