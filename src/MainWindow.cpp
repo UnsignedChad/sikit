@@ -18,6 +18,7 @@
 #include "LayerPanel.h"
 #include "PcbCanvas.h"
 #include "analysis/ChannelSynthesis.h"
+#include "analysis/DiffSynth.h"
 #include "analysis/TraceImpedance.h"
 #include "dsp/ChannelResponse.h"
 #include "eye/Eye.h"
@@ -61,6 +62,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     auto* exportCsv = fileMenu->addAction("Export net frequency sweep &CSV...");
     exportCsv->setShortcut(QKeySequence("Ctrl+Shift+C"));
     connect(exportCsv, &QAction::triggered, this, &MainWindow::onExportNetCsv);
+    auto* exportS4p = fileMenu->addAction("Export &diff pair as Touchstone .s4p...");
+    exportS4p->setShortcut(QKeySequence("Ctrl+Shift+D"));
+    connect(exportS4p, &QAction::triggered, this, &MainWindow::onExportDiffPairS4p);
     fileMenu->addSeparator();
     fileMenu->addAction("E&xit", this, &QWidget::close);
 
@@ -344,6 +348,117 @@ void MainWindow::onExportNetTouchstone() {
     spdlog::info("exported {} to {} (W={:.3f}mm L={:.1f}mm)",
                  choice.toStdString(), path.toStdString(),
                  trace_width * 1e3, total_length * 1e3);
+}
+
+void MainWindow::onExportDiffPairS4p() {
+    if (!board_) {
+        QMessageBox::information(this, "Export diff-pair S4P",
+                                 "Open a KiCad PCB first.");
+        return;
+    }
+    auto pairs = sikit::highspeed::find_diff_pairs(*board_);
+    if (pairs.empty()) {
+        QMessageBox::information(this, "Export diff-pair S4P",
+                                 "No diff pairs detected on this board.");
+        return;
+    }
+
+    QStringList items;
+    for (const auto& dp : pairs) {
+        items << QString::fromStdString(dp.base_name);
+    }
+    bool ok = false;
+    const QString choice = QInputDialog::getItem(
+        this, "Pick diff pair", "Diff pair to export:", items, 0, false, &ok);
+    if (!ok) return;
+
+    // Look up the chosen pair to get its segment widths + spacing.
+    const sikit::highspeed::DiffPair* picked = nullptr;
+    for (const auto& dp : pairs) {
+        if (QString::fromStdString(dp.base_name) == choice) {
+            picked = &dp;
+            break;
+        }
+    }
+    if (!picked) return;
+
+    // Derive median width across F.Cu segments on either net, and use
+    // the geometry-derived spacing from compute_diff_pairs (which already
+    // does the parallel-overlap analysis).
+    sikit::analysis::AnalysisStackup stackup =
+        sikit::analysis::AnalysisStackup::from_board(*board_);
+    auto dpz = sikit::analysis::compute_diff_pairs(
+        *board_, stackup, sikit::analysis::Engine::ClosedForm);
+    sikit::analysis::DiffPairImpedance dp_meta;
+    bool found = false;
+    for (const auto& d : dpz) {
+        if (d.base_name == picked->base_name) {
+            dp_meta = d;
+            found = true;
+            break;
+        }
+    }
+    if (!found || dp_meta.trace_width <= 0.0) {
+        QMessageBox::warning(this, "Export diff-pair S4P",
+                              "Diff pair has no F.Cu geometry to model.");
+        return;
+    }
+    // Sum the segment lengths of both nets on F.Cu for total channel length.
+    double total_length = 0.0;
+    for (const auto& s : board_->segments) {
+        if (s.layer_ordinal != 0) continue;
+        if (s.net_id != picked->net_p_id && s.net_id != picked->net_n_id) continue;
+        const double dx = s.end.x - s.start.x;
+        const double dy = s.end.y - s.start.y;
+        total_length += std::sqrt(dx * dx + dy * dy);
+    }
+    // Divide by 2 since we summed BOTH legs of the pair.
+    total_length *= 0.5;
+    if (total_length <= 0.0) {
+        QMessageBox::warning(this, "Export diff-pair S4P",
+                              "Diff pair has no F.Cu length to model.");
+        return;
+    }
+
+    const QString path = QFileDialog::getSaveFileName(
+        this, "Save diff-pair Touchstone", QString("%1.s4p").arg(choice),
+        "Touchstone 4-port (*.s4p)");
+    if (path.isEmpty()) return;
+
+    sikit::analysis::DiffChannelSpec spec;
+    spec.trace_width = dp_meta.trace_width;
+    spec.spacing     = dp_meta.spacing;
+    spec.layer_ordinal = 0;
+    spec.length_m  = total_length;
+    spec.stackup   = stackup;
+
+    std::vector<double> freqs;
+    freqs.reserve(200);
+    const double f_lo = 10e6, f_hi = 20e9;
+    for (int i = 0; i < 200; ++i) {
+        const double t = static_cast<double>(i) / 199.0;
+        freqs.push_back(f_lo + t * (f_hi - f_lo));
+    }
+
+    try {
+        auto ts = sikit::analysis::synthesize_diff_channel(spec, freqs, 50.0);
+        sikit::touchstone::TouchstoneWriter::write_file(ts, path.toStdString());
+    } catch (const std::exception& e) {
+        QMessageBox::critical(this, "Export failed", e.what());
+        return;
+    }
+
+    statusBar()->showMessage(
+        QString("Exported %1 (4-port) → %2  ·  W=%3mm  S=%4mm  L=%5mm")
+            .arg(choice)
+            .arg(QFileInfo(path).fileName())
+            .arg(dp_meta.trace_width * 1e3, 0, 'f', 3)
+            .arg(dp_meta.spacing     * 1e3, 0, 'f', 3)
+            .arg(total_length        * 1e3, 0, 'f', 1));
+    spdlog::info("exported diff pair {} → {} (W={:.3f}mm S={:.3f}mm L={:.1f}mm)",
+                 choice.toStdString(), path.toStdString(),
+                 dp_meta.trace_width * 1e3, dp_meta.spacing * 1e3,
+                 total_length * 1e3);
 }
 
 void MainWindow::onOpenIbis() {

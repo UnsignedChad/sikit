@@ -25,6 +25,7 @@ private slots:
     void onSynthesizeEye();
     void onExportNetTouchstone();
     void onExportNetCsv();
+    void onExportDiffPairS4p();
     void onOpenIbis();
 
 private:
