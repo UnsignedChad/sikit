@@ -42,6 +42,7 @@ add_library(sikit_core STATIC
     src/highspeed/DiffPair.cpp
     src/analysis/TraceImpedance.cpp
     src/analysis/ChannelSynthesis.cpp
+    src/analysis/DiffSynth.cpp
     src/ibis/Ibis.cpp
     src/ibis/Ami.cpp
     src/dispersion/DjordjevicSarkar.cpp
